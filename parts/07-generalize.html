@@ -1,0 +1,582 @@
+<section class="ch" id="ch-07-generalize" data-num="07" data-title="过拟合与泛化">
+  <header class="ch-head">
+    <div class="ch-eyebrow"><span class="dot"></span>第 07 章 · 核心</div>
+    <h1 class="ch-title">过拟合与泛化</h1>
+    <p class="ch-sub">训练集上的分数再漂亮,也可能是背答案;这一章教你看穿并修好它。</p>
+    <div class="ch-rule"></div>
+  </header>
+
+  <div class="prereq"><b>读前</b><span>第 06 章 6.1 训练循环、6.3 动量与 Adam、6.4 学习率;第 03 章 3.3 梯度</span><b>可跳过</b><span>7.6 的 PyTorch 代码块;7.4 中动量/Adam 与权重衰减等价边界那一段</span></div>
+
+  <p class="lead">一个 4,482 个参数的网络,可以把 40 个训练样本的损失压到 0.08,却在 400 个没见过的样本上错掉四分之一。这不是代码写错了,而是模型开始背答案。你要学会用三份数据、两条曲线和四种正则化(regularization)手段,把这种背答案的行为拦住。</p>
+
+  <h3><span class="h3-n">7.1</span>训练集、验证集、测试集</h3>
+
+  <p>先记住一条纪律:任何一次正经训练,你手里都要有三份互不重叠的数据。训练集(training set)唯一的工作是算梯度、改权重;验证集(validation set)不参与梯度,只用来做选择——选学习率、选网络宽度、决定第几轮停;测试集(test set)只在项目最后打开一次,用来估计模型面对真正新数据时的表现。</p>
+
+  <p>三份数据的分工像开卷练习、模拟考和高考。训练集是练习册,答案就在旁边,分数高不说明你会做新题;验证集是模拟考,你可以根据成绩调整复习方法;测试集是高考,考完才知道真实水平。如果每改一版模型就跑一次测试集,这张高考卷就变成了练习册,最后报出的分数一定虚高。这种污染在真实项目里非常常见,是数据泄漏(data leakage)的一种。</p>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>数据</th><th>用途</th><th>是否参与梯度</th><th>使用频率</th></tr></thead>
+      <tbody>
+        <tr><td>训练集</td><td>更新权重</td><td>是</td><td>每个 batch</td></tr>
+        <tr><td>验证集</td><td>选超参数、早停</td><td>否</td><td>每个 epoch</td></tr>
+        <tr><td>测试集</td><td>最终评估</td><td>否</td><td>项目结束一次</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>常见比例:数据量小(几千条以内)用 60/20/20;数据量大用 98/1/1。比如 50,000 张图片,可以留 49,000 张训练、500 张验证、500 张测试。划分要随机,而且要保证三份数据来自同一个分布;如果你按时间切分,验证集和测试集必须都在训练集之后,否则模型会看到未来。</p>
+
+  <p>这里要区分两个词。超参数(hyperparameter)是训练开始前由你定的数,比如学习率、隐藏宽度、dropout 概率;权重是训练过程中由梯度学出来的数。验证集就是给超参数打分的裁判。测试集连这个裁判的活都不该干,它只负责最后签字。</p>
+
+  <div class="callout warn"><b>常见误解</b>每改一版模型都跑一次测试集,然后挑测试分数最高的那版写进报告。这样做等于用测试集调参,它已经变成了第二个验证集;你报告的分数不再是对新数据的估计,而是对这张测试卷的拟合程度。正确做法是:调参只看验证集,测试集在最后一次评估前不许打开。</div>
+
+  <h3><span class="h3-n">7.2</span>欠拟合与过拟合的曲线</h3>
+
+  <p>把训练损失和验证损失画在同一张图上,形状基本只有三种。第一种是欠拟合(underfitting):两条曲线都停在很高的位置,而且贴得很近,模型连训练集都没学好。原因通常是容量不够、特征太少,或者训练轮数远远不够。第二种是过拟合(overfitting):训练损失一路下降,验证损失先跟着降,某个点之后掉头向上,两条线越张越开。第三种是合适:验证损失降到最低点后走平,和训练损失保持一个不大的差距。</p>
+
+  <p>训练损失的定义是每个样本损失的平均值:</p>
+
+  <div class="math"><var>L</var><sub>train</sub>(<var>θ</var>) = (1/<var>n</var>) Σ <var>ℓ</var>(<var>f</var><sub>θ</sub>(<var>x</var><sub>i</sub>), <var>y</var><sub>i</sub>)</div>
+
+  <p>式中 Σ 是求和(sum),θ 是模型参数(parameters),ℓ 是单样本损失(per-sample loss),n 是样本数。它只统计模型在见过的样本上错得有多离谱。验证损失用同一个公式,但那些样本从未参与过梯度更新。两者之差 <var>L</var><sub>val</sub> − <var>L</var><sub>train</sub> 叫泛化差距(generalization gap)。你真正想要的是泛化(generalization):在新样本上仍然低。训练损失低只是必要条件,不是充分条件。</p>
+
+  <p>只看训练损失会骗你,因为把几十个点背下来太容易了。下面这个演示用 40 个训练样本,其中 10 个标签被故意标错,模拟真实标注里常见的噪声。网络是 [2,64,64,2],共 4,482 个参数,平均每个样本 112 个参数。它会连错误标签一起背:训练损失降到 0.08,验证损失先降到 0.42、再爬到 1.9,验证准确率最高约 84%、最后掉到 73%,而训练准确率能到 98%。打开 L2 或 dropout 再跑一遍,分叉会被明显压住。</p>
+
+  <div class="demo" id="d-07-curves">
+    <div class="demo-bar"><span class="live">交互</span><span>40 个样本上的训练损失与验证损失</span><span class="sp"></span><span class="tag">可开关正则化</span></div>
+    <div class="demo-body">
+      <div class="canvas-wrap"><canvas id="cv-07-curves" height="260"></canvas></div>
+      <div class="controls">
+        <div class="ctl">
+          <label>正则化开关</label>
+          <div class="seg">
+            <button id="b-07-l2" type="button" aria-pressed="false">L2</button>
+            <button id="b-07-drop" type="button" aria-pressed="false">Dropout</button>
+          </div>
+        </div>
+        <button class="btn" id="b-07-restart" type="button">重新训练</button>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><b id="o-07-tr">0.69</b><span>训练损失</span></div>
+        <div class="stat"><b id="o-07-va">0.69</b><span>验证损失</span></div>
+        <div class="stat"><b id="o-07-acc">50%</b><span>验证准确率</span></div>
+      </div>
+    </div>
+    <div class="demo-hint">红线是 400 个新样本上的验证损失。先让它自己跑,看红线先降后翘;再打开 L2 或 Dropout(会从头重训),看两条线还分不分叉。训练样本里有 10 个标签是错的。</div>
+  </div>
+
+  <div class="callout warn"><b>常见误解</b>训练损失降到 0.001,说明模型训练得很成功。训练损失只说明模型把见过的样本背得多熟。40 个样本配 4,482 个参数,把损失压到接近 0 几乎必然发生,连标错的标签也能背。训练损失接近 0 而验证损失上升,是过拟合的典型信号,不是成功信号。</div>
+
+  <h3><span class="h3-n">7.3</span>容量、偏差与方差</h3>
+
+  <p>容量(capacity)指模型能表示的函数的丰富程度。对全连接网络,最直接的两个旋钮是宽度(每层神经元数)和深度(层数)。参数越多,容量越大,越能把复杂的边界刻出来。以本章的 [2,64,64,2] 网络为例:第一层有 2×64+64=192 个参数,第二层有 64×64+64=4,160 个,输出层有 64×2+2=130 个,合计 4,482 个。</p>
+
+  <p>容量本身不是坏事。容量太小,模型连训练集都拟合不了,这叫欠拟合;容量太大而数据太少,模型会把训练集里的噪声也当成规律,这叫过拟合。理解这个权衡最清楚的工具是偏差-方差分解(bias-variance decomposition)。对平方损失,期望误差可以写成:</p>
+
+  <div class="math">E[(<var>y</var> − <var>f̂</var>(<var>x</var>))<sup>2</sup>] = bias<sup>2</sup> + variance + σ<sup>2</sup></div>
+
+  <p>式中 E[·] 是期望(expected value),f̂ 是模型预测(prediction)。偏差(bias)衡量模型的平均预测离真实函数有多远,高偏差就是欠拟合;方差(variance)衡量换一批训练数据后模型会变多少,高方差就是过拟合;σ² 是数据本身的噪声,任何模型都消不掉。容量增大通常降低偏差、抬高方差;增加训练数据只降低方差;正则化则是在容量不变的前提下把方差压下去。三者要一起调。</p>
+
+  <p>小样本会把方差问题放大。下面这个演示固定 40 个训练样本,只把隐藏宽度从 2 拖到 64。宽度 2 时网络太窄,训练准确率 60%、验证 50%,基本只在猜一个类;宽度 8 时验证准确率最高,约 84%,宽度 16 略降到 78%;继续加宽到 64,训练准确率到 98%,验证准确率反而回落到 74%。那根越来越长的训练条,就是它在背 40 个样本的证据。</p>
+
+  <div class="demo" id="d-07-capacity">
+    <div class="demo-bar"><span class="live">交互</span><span>容量滑块:宽度 2 到 64</span><span class="sp"></span><span class="tag">拖动即重训</span></div>
+    <div class="demo-body">
+      <div class="canvas-wrap"><canvas id="cv-07-cap" height="120"></canvas></div>
+      <div class="controls">
+        <div class="ctl"><label for="s-07-cap">隐藏宽度 <output id="o-07-cap">64</output></label>
+          <input id="s-07-cap" type="range" min="2" max="64" step="1" value="64"></div>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><b id="o-07-params">4,482</b><span>参数量</span></div>
+        <div class="stat"><b>40</b><span>训练样本</span></div>
+        <div class="stat"><b>400</b><span>验证样本</span></div>
+      </div>
+    </div>
+    <div class="demo-hint">拖动滑块,网络会从零开始重训,两根条形实时变化。宽度 2 时两条都低;宽度 8 时验证最高;宽度 64 时训练顶到 98%,验证回落到 74%。这是容量过大、数据过少时最典型的形状。</div>
+  </div>
+
+  <h3><span class="h3-n">7.4</span>四种压住过拟合的手段</h3>
+
+  <h4>L2 正则化与权重衰减</h4>
+
+  <p>L2 正则化(L2 regularization)在损失后面加一项权重的平方和。只有在普通 SGD 下,它才等价于权重衰减(weight decay),两个名字常被混着用;换一个优化器,这个等价就不成立了:</p>
+
+  <div class="math"><var>L</var> = <var>L</var><sub>CE</sub> + (<var>λ</var>/2) Σ <var>w</var><sup>2</sup></div>
+
+  <p>式中 λ 是正则化强度(penalty strength),L_CE 是交叉熵损失(cross-entropy)。它对每个权重求导会多出 λw,所以梯度下降的更新变成 <var>w</var> ← (1 − ηλ)<var>w</var> − η∇<var>L</var>,其中 ← 是赋值(assign),η 是学习率(learning rate),∇L 是损失对权重的梯度(gradient)。每一步先把权重乘上一个略小于 1 的系数,再减去原来的梯度。取学习率 η=0.01、λ=0.02,每步额外收缩 0.02%。几千步下来,只有对降低损失真正有用的权重才留得大,多余的权重被压向 0,函数因此更平滑,对输入的小扰动没那么敏感。偏置项通常不惩罚,因为它不控制函数的陡峭程度。</p>
+
+  <p>先说清楚这个“等价”的边界。上面 <var>w</var> ← (1 − ηλ)<var>w</var> − η∇<var>L</var> 每一步只用到当前梯度,所以 λw 恰好表现为把权重乘上 1 − ηλ。带动量的 SGD(momentum SGD)不行:λw 会和普通梯度一起存进动量,在 β=0.9、η=0.01、λ=0.02 时,稳态下每步的有效收缩变成 ηλ/(1−β)=0.2%,是朴素 SGD 的 10 倍,衰减强度已经不只由 λ 决定。Adam 更不听话,它把梯度除以 √v̂(√ 是开平方,square root),同一个 λw 在不同参数上被放大或缩小不同的倍数:两个参数的梯度长期均方根若分别是 2.0 和 0.01,单是衰减这一项的步长就相差 200 倍,L2 想要的“对所有参数一视同仁地压小”落了空。真正的权重衰减应该绕开梯度,直接算 <var>w</var> ← (1 − ηλ)<var>w</var>;这正是 AdamW 存在的原因,它把衰减项从梯度里拆出来,不再被自适应缩放扭曲(第 6 章 6.3)。顺带一提,PyTorch 的 <code>torch.optim.Adam</code> 里 <code>weight_decay</code> 做的仍是 L2,要解耦衰减得用 <code>torch.optim.AdamW</code>。</p>
+
+  <h4>Dropout</h4>
+
+  <p>dropout 在每个训练 batch 里以概率 p 随机把隐藏单元的输出置零,并把留下的值乘 1/(1−p)。p=0.4 时,留下的单元放大 1.667 倍,保证这一层的期望输出不变。推理时关掉 dropout,使用完整网络。它强迫神经元不能依赖某几个固定伙伴,学到的特征更冗余、更稳。最常见的 bug 是推理时忘了切换到评估模式(PyTorch 里的 model.eval()),导致预测结果带随机性。</p>
+
+  <h4>数据增强</h4>
+
+  <p>数据增强(data augmentation)不改变标签,只改变输入的表面形式:图片随机水平翻转、随机裁到 32×32、轻微调亮度;语音加一点背景噪声或做时间平移;文本做同义替换。CIFAR-10 只有 50,000 张训练图,随机裁剪加翻转相当于每一轮都看到略有不同的样本,模型很难靠记住像素位置过关。前提是变换不改变类别:把数字 6 上下翻转成 9 不是增强,是造错标签;医学影像里把左右翻转可能把心脏位置弄反,也不可用。</p>
+
+  <h4>早停</h4>
+
+  <p>早停(early stopping)每个 epoch 结束在验证集上算一次损失,记下最低点;连续 patience=20 个 epoch 没有刷新就停,回到验证损失最低的那组权重。它不往损失里加惩罚项、也不引入正则系数,只需要定 patience 这一个旋钮,是最便宜的正则化。注意 patience 不能设成 1,验证损失会抖,一抖就停会停在半山腰;20 是常见起点,数据越少可以设得越大。</p>
+
+  <p>四种手段可以叠加。演示里同时打开 L2 和 dropout,验证损失会落在 0.4 附近,验证准确率约 90%;单独打开任意一个,也能把 1.9 的验证损失压到 0.65 以下。代价是训练损失不会像无正则时那么低,这不是退步,而是你用训练分数换来了新数据上的分数。真正要比较的是验证损失和验证准确率,不是训练损失。</p>
+
+  <h3><span class="h3-n">7.5</span>小样本的陷阱</h3>
+
+  <p>40 个样本配 4,482 个参数,比例是 112:1。这个比例下,训练集几乎可以被完美记住,任何关于泛化的结论都要打折扣。更麻烦的是,验证集本身也有随机误差。若真实准确率是 p=0.8,用 n 个样本估计,标准误差约为 √(p(1−p)/n)。标准误差(standard error)是换一批样本重测时结果的晃动幅度。n=400 时是 0.02,即 ±2 个百分点;n=100 时是 0.04;n=40 时是 0.063。两个模型在 100 个验证样本上拿到 81% 和 79%,这 2 个点的差距完全落在噪声里,不能据此说前者更好。要把标准误差压到 0.013,验证集需要 1,000 个样本。</p>
+
+  <p>小样本还有三个更隐蔽的坑。第一是多重比较:你试 20 组超参数,总有一组在验证集上碰巧高 2 个点,把最好那组写进报告,等于偷看了答案。缓解办法是留出独立的测试集,或者做交叉验证(cross-validation):把训练数据切成 5 份,轮流用 4 份训练、1 份验证,取平均。第二是类别不平衡:95% 是负类、5% 是正类,全猜负类就有 95% 准确率,但这个模型一点用也没有;这时要看每一类的召回率(recall)和 F1,不要只看总准确率。第三是泄漏:先对全体数据做标准化再划分,均值和方差里已经混进了测试集的信息;同一个用户、同一张图的近似副本同时出现在训练和验证里,分数也会虚高。</p>
+
+  <p>如果只能做一件事来提升泛化,通常是加数据,而不是换更复杂的结构。数据从 40 个加到 4,000 个,方差会显著下降;而从 4,482 个参数加到 44,820 个,往往只是让过拟合更严重。</p>
+
+  <h3><span class="h3-n">7.6</span>一段能跑的 PyTorch 骨架</h3>
+
+  <p>下面这段代码把本章的四件事放进同一个训练循环:dropout、L2(通过 weight_decay)、验证集监控、早停。数据加载器用 train_loader 和 val_loader 代替,关键是每个 epoch 结束都切到 eval 模式算验证损失,并且只在验证损失刷新时保存权重。</p>
+
+  <div class="code-wrap">
+    <div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div>
+    <pre class="code"><code>import torch, torch.nn as nn
+
+model = nn.Sequential(
+    nn.Linear(2, 64), nn.ReLU(), nn.Dropout(0.4),
+    nn.Linear(64, 64), nn.ReLU(), nn.Dropout(0.4),
+    nn.Linear(64, 2),
+)
+decay, no_decay = [], []
+for name, p in model.named_parameters():
+    (no_decay if name.endswith("bias") else decay).append(p)
+
+opt = torch.optim.Adam([
+    {"params": decay, "weight_decay": 2e-2},
+    {"params": no_decay, "weight_decay": 0.0},
+], lr=1e-2)
+loss_fn = nn.CrossEntropyLoss()
+
+best_val, best_state, bad, patience = float("inf"), None, 0, 20
+for epoch in range(300):
+    model.train()
+    for xb, yb in train_loader:
+        opt.zero_grad()
+        loss = loss_fn(model(xb), yb)
+        loss.backward()
+        opt.step()
+
+    model.eval()
+    with torch.no_grad():
+        total = 0.0
+        for xb, yb in val_loader:
+            total += loss_fn(model(xb), yb).item() * len(xb)
+        val_loss = total / len(val_loader.dataset)
+
+    if val_loss &lt; best_val - 1e-4:
+        best_val, bad = val_loss, 0
+        best_state = {k: v.clone() for k, v in model.state_dict().items()}
+    else:
+        bad += 1
+        if bad >= patience:
+            print("early stop at epoch", epoch, "best val", round(best_val, 3))
+            break
+
+model.load_state_dict(best_state)</code></pre>
+  </div>
+
+  <p>这段代码里 weight_decay=2e-2 就是 L2,dropout 只在 model.train() 时生效,早停由 bad 计数控制。把 dropout 改成 0、weight_decay 改成 0,再跑一次,你会看到训练损失降得更低,但验证损失更早开始上升——这正是本章演示在浏览器里复现的现象。</p>
+
+  <h3><span class="h3-n">7.7</span>把顺序记牢</h3>
+
+  <div class="callout key"><b>核心</b>先划三份数据;用训练集训练;每个 epoch 看验证损失;在最低点附近早停;需要更强约束时加 L2、dropout、数据增强;最后只碰一次测试集。训练损失只用来判断有没有学起来(是否欠拟合),不用来判断泛化。</div>
+
+  <p>还有一条实用的读图习惯:不要盯某一个点的验证损失,要看趋势。验证损失抖动两三个百分点很正常,连续 10 个 epoch 向上才是信号。当验证损失开始持续上升而训练损失还在下降,立刻保存当前权重,再决定是早停、加正则,还是回去补数据。这个判断比任何单一指标都可靠。</p>
+
+  <div class="quiz" data-id="q-07-1">
+    <p class="q">你有 10,000 条数据,要选学习率和网络宽度,应该看哪个指标?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="训练损失只会随着容量和训练时间增加而下降,它对“新数据上好不好”系统性偏乐观。用它选宽度,你几乎总会选到最宽、最会背训练集的那个。">训练损失</button>
+      <button class="opt" data-k="B" data-ok data-why="正确。验证集不参与梯度,它的损失反映模型对没见过的样本的预测能力,正是用来选超参数的。选完再在测试集上做一次最终评估。">验证集损失</button>
+      <button class="opt" data-k="C" data-why="测试集只能最后用一次。你每试一组超参数就看一次测试集,测试集就被你用来做选择了,它变成了第二个验证集,最后报出的分数不再可信。">测试集损失</button>
+      <button class="opt" data-k="D" data-why="训练准确率和训练损失是同一个问题的两种写法,都只统计见过的样本。宽度越大,训练准确率越容易到 100%,但它不能告诉你模型在新数据上会不会崩。">训练准确率</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <div class="quiz" data-id="q-07-2">
+    <p class="q">训练损失 0.01,验证损失从 0.4 升到 1.2,最合理的下一步是什么?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="验证损失已经在上升,说明模型开始背训练集的噪声。继续训练只会让训练损失更低、验证损失更高,泛化差距继续拉大。">继续训练,训练损失还能降</button>
+      <button class="opt" data-k="B" data-why="加宽网络会提高容量,而容量正是当前过拟合的来源。这会让模型更容易记住 40 个样本,验证损失通常更糟,不是更好。">增大网络宽度</button>
+      <button class="opt" data-k="C" data-ok data-why="正确。回到验证损失最低的那一步(早停),再考虑加 L2、dropout、数据增强或补数据。验证损失最低点就是这批数据上泛化最好的时刻。">早停到验证损失最低点,并考虑加正则或数据</button>
+      <button class="opt" data-k="D" data-why="验证集是唯一能提前发现过拟合的信号。删掉它,你会失去选择超参数的依据,只能看训练损失,而那正是已经骗了你的指标。">删除验证集,用全部数据训练</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <div class="quiz" data-id="q-07-3">
+    <p class="q">验证集只有 100 个样本,模型甲 81%、模型乙 79%,能否断定甲更好?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="2 个百分点听起来是差距,但 100 个样本的估计标准误差约为 4 个百分点。真实差距完全可能是 0,甚至方向相反,这个比较没有统计意义。">能,81% 比 79% 高 2 个点</button>
+      <button class="opt" data-k="B" data-ok data-why="正确。p≈0.8、n=100 时标准误差约 √(0.8×0.2/100)=0.04,即 ±4 个百分点;2 个点的差异落在噪声内。要么扩大验证集,要么做交叉验证并报告置信区间。">不能,2 个点在 ±4 个点的噪声范围内</button>
+      <button class="opt" data-k="C" data-why="训练准确率只统计模型见过的样本,和泛化能力是两件事。训练准确率更高的模型很可能只是背得更熟,不能用来裁决验证集上的 2 点差异。">不能,应该改看训练准确率</button>
+      <button class="opt" data-k="D" data-why="把 100 个验证样本再拆成两份只会让每份更小,标准误差更大,比较更不可靠。正确方向是增加样本或做交叉验证,不是继续切分。">能,把验证集再对半分两次确认</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <div class="ch-foot">
+    <span class="state" data-state></span>
+    <span class="sp"></span>
+    <a class="btn" href="#ch-08-conv">下一章 →</a>
+  </div>
+</section>
+
+<script>
+(function(){
+  "use strict";
+
+  function shuffle(a, rng){
+    for(var i=a.length-1;i>0;i--){
+      var j=Math.floor(rng()*(i+1));
+      var t=a[i]; a[i]=a[j]; a[j]=t;
+    }
+    return a;
+  }
+
+  function softmax(z){
+    var m=-Infinity, i;
+    for(i=0;i<z.length;i++) if(z[i]>m) m=z[i];
+    var o=new Float64Array(z.length), s=0;
+    for(i=0;i<z.length;i++){ o[i]=Math.exp(z[i]-m); s+=o[i]; }
+    for(i=0;i<o.length;i++) o[i]/=s;
+    return o;
+  }
+
+  function makeNet(sizes, seed){
+    var rng=NN.mulberry32(seed);
+    var L=sizes.length-1, W=[], b=[];
+    for(var l=0;l<L;l++){
+      var nin=sizes[l], nout=sizes[l+1];
+      var w=new Float64Array(nin*nout);
+      var sc=Math.sqrt(2/Math.max(1,nin));
+      for(var i=0;i<w.length;i++) w[i]=NN.randn(rng)*sc;
+      W.push(w);
+      b.push(new Float64Array(nout));
+    }
+    return {sizes:sizes, L:L, W:W, b:b, adam:null};
+  }
+
+  function forward(net, x, dropP, training, rng){
+    var acts=[x], masks=[], a=x, L=net.L;
+    for(var l=0;l<L;l++){
+      var nin=net.sizes[l], nout=net.sizes[l+1];
+      var z=new Float64Array(nout);
+      for(var j=0;j<nout;j++){
+        var s=net.b[l][j], off=j*nin;
+        for(var i=0;i<nin;i++) s+=net.W[l][off+i]*a[i];
+        z[j]=s;
+      }
+      if(l===L-1){
+        a=softmax(z);
+      } else {
+        var na=new Float64Array(nout);
+        for(var q=0;q<nout;q++) na[q]=z[q]>0?z[q]:0;
+        var mask=null;
+        if(training && dropP>0){
+          mask=new Float64Array(nout);
+          var keep=1-dropP;
+          for(var r=0;r<nout;r++){
+            mask[r]=rng()<keep?1/keep:0;
+            na[r]*=mask[r];
+          }
+        }
+        masks.push(mask);
+        a=na;
+      }
+      acts.push(a);
+    }
+    return {acts:acts, masks:masks};
+  }
+
+  function backward(net, x, y, dropP, rng, gW, gb){
+    var f=forward(net, x, dropP, true, rng);
+    var L=net.L, p=f.acts[L];
+    var delta=new Float64Array(net.sizes[L]);
+    for(var j=0;j<delta.length;j++) delta[j]=p[j]-(j===y?1:0);
+    for(var l=L-1;l>=0;l--){
+      var nin=net.sizes[l], nout=net.sizes[l+1], ap=f.acts[l];
+      var gw=gW[l], gbb=gb[l];
+      for(j=0;j<nout;j++){
+        var d=delta[j], off=j*nin;
+        if(d===0) continue;
+        for(var i=0;i<nin;i++) gw[off+i]+=d*ap[i];
+        gbb[j]+=d;
+      }
+      if(l>0){
+        var prev=new Float64Array(nin);
+        var mask=f.masks[l-1];
+        var wl=net.W[l];
+        for(i=0;i<nin;i++){
+          var s=0;
+          for(j=0;j<nout;j++) s+=wl[j*nin+i]*delta[j];
+          if(mask) s*=mask[i];
+          prev[i]=s*(ap[i]>0?1:0);
+        }
+        delta=prev;
+      }
+    }
+  }
+
+  function trainStep(net, batch, lr, opt){
+    var l, i;
+    var gW=[], gb=[];
+    for(l=0;l<net.L;l++){
+      gW.push(new Float64Array(net.W[l].length));
+      gb.push(new Float64Array(net.b[l].length));
+    }
+    for(i=0;i<batch.length;i++) backward(net, batch[i].x, batch[i].y, opt.drop||0, opt.rng, gW, gb);
+
+    if(!net.adam){
+      net.adam={t:0, mW:[], vW:[], mb:[], vb:[]};
+      for(l=0;l<net.L;l++){
+        net.adam.mW.push(new Float64Array(net.W[l].length));
+        net.adam.vW.push(new Float64Array(net.W[l].length));
+        net.adam.mb.push(new Float64Array(net.b[l].length));
+        net.adam.vb.push(new Float64Array(net.b[l].length));
+      }
+    }
+    var A=net.adam;
+    A.t++;
+    var n=batch.length||1, l2=opt.l2||0;
+    for(l=0;l<net.L;l++){
+      var W=net.W[l], gw=gW[l], m=A.mW[l], v=A.vW[l];
+      for(i=0;i<W.length;i++){
+        var g=gw[i]/n+l2*W[i];
+        m[i]=0.9*m[i]+0.1*g;
+        v[i]=0.999*v[i]+0.001*g*g;
+        var mh=m[i]/(1-Math.pow(0.9,A.t));
+        var vh=v[i]/(1-Math.pow(0.999,A.t));
+        W[i]-=lr*mh/(Math.sqrt(vh)+1e-8);
+      }
+      var B=net.b[l], gbb=gb[l], mb=A.mb[l], vb=A.vb[l];
+      for(i=0;i<B.length;i++){
+        var gb2=gbb[i]/n;
+        mb[i]=0.9*mb[i]+0.1*gb2;
+        vb[i]=0.999*vb[i]+0.001*gb2*gb2;
+        var mbh=mb[i]/(1-Math.pow(0.9,A.t));
+        var vbh=vb[i]/(1-Math.pow(0.999,A.t));
+        B[i]-=lr*mbh/(Math.sqrt(vbh)+1e-8);
+      }
+    }
+  }
+
+  function evaluate(net, train, val){
+    var out={tl:0, vl:0, ta:0, va:0}, i, j, best, p;
+    for(i=0;i<train.length;i++){
+      p=forward(net, train[i].x, 0, false, null).acts[net.L];
+      out.tl-=Math.log(Math.max(1e-12, p[train[i].y]));
+      best=0;
+      for(j=1;j<p.length;j++) if(p[j]>p[best]) best=j;
+      if(best===train[i].y) out.ta++;
+    }
+    for(i=0;i<val.length;i++){
+      p=forward(net, val[i].x, 0, false, null).acts[net.L];
+      out.vl-=Math.log(Math.max(1e-12, p[val[i].y]));
+      best=0;
+      for(j=1;j<p.length;j++) if(p[j]>p[best]) best=j;
+      if(best===val[i].y) out.va++;
+    }
+    out.tl/=Math.max(1, train.length);
+    out.vl/=Math.max(1, val.length);
+    out.ta/=Math.max(1, train.length);
+    out.va/=Math.max(1, val.length);
+    return out;
+  }
+
+  function makeData(){
+    var Data=window.Data||(window.NN&&NN.Data);
+    var pts=Data.moons(40, 3);
+    var flip=NN.mulberry32(123);
+    for(var i=0;i<pts.length;i++) if(flip()<0.25) pts[i].y=1-pts[i].y;
+    return {train:pts, val:Data.moons(400, 77)};
+  }
+
+  function commas(n){
+    return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  }
+
+  function whenNN(init){
+    return function boot(root){
+      if(window.NN) return init(root);
+      if((boot.tries=(boot.tries||0)+1)>200) return;
+      setTimeout(function(){ boot(root); }, 50);
+    };
+  }
+
+  defineDemo('d-07-curves', whenNN(function(root){
+    var canvas=root.querySelector('#cv-07-curves');
+    var plot=new NN.Plot(canvas, {
+      xLabel:'训练步数', yLabel:'交叉熵损失',
+      xRange:[0, 2400], yRange:[0, 2.4],
+      height:260,
+      series:[
+        {name:'训练损失', color:'--c1', data:[]},
+        {name:'验证损失', color:'--c2', data:[], dashed:true}
+      ]
+    });
+    var trOut=root.querySelector('#o-07-tr');
+    var vaOut=root.querySelector('#o-07-va');
+    var accOut=root.querySelector('#o-07-acc');
+    var l2Btn=root.querySelector('#b-07-l2');
+    var dropBtn=root.querySelector('#b-07-drop');
+    var restartBtn=root.querySelector('#b-07-restart');
+
+    var state={net:null, data:null, l2:false, drop:false, step:0, max:2400,
+      rng:null, order:[], pos:0, lossTrain:[], lossVal:[], lastRec:-1, lastT:0};
+
+    function takeBatch(){
+      var b=[];
+      for(var k=0;k<10;k++){
+        if(state.pos>=state.order.length){
+          state.order=shuffle(state.data.train.slice(), state.rng);
+          state.pos=0;
+        }
+        b.push(state.order[state.pos++]);
+      }
+      return b;
+    }
+
+    function trainOne(){
+      trainStep(state.net, takeBatch(), 0.01, {
+        l2:state.l2?0.02:0,
+        drop:state.drop?0.4:0,
+        rng:state.rng
+      });
+      state.step++;
+    }
+
+    function record(){
+      var m=evaluate(state.net, state.data.train, state.data.val);
+      state.lossTrain.push([state.step, m.tl]);
+      state.lossVal.push([state.step, m.vl]);
+      state.lastRec=state.step;
+      plot.set({series:[
+        {name:'训练损失', color:'--c1', data:state.lossTrain},
+        {name:'验证损失', color:'--c2', data:state.lossVal, dashed:true}
+      ]});
+      trOut.textContent=NN.fmt(m.tl, 2);
+      vaOut.textContent=NN.fmt(m.vl, 2);
+      accOut.textContent=Math.round(m.va*100)+'%';
+    }
+
+    function reset(){
+      state.data=makeData();
+      state.net=makeNet([2,64,64,2], 11);
+      state.rng=NN.mulberry32(99);
+      state.order=shuffle(state.data.train.slice(), state.rng);
+      state.pos=0; state.step=0; state.lastRec=-1;
+      state.lossTrain=[]; state.lossVal=[];
+      record();
+      while(state.step<600){
+        trainOne();
+        if(state.step%40===0) record();
+      }
+    }
+
+    function setPressed(btn, on){
+      btn.setAttribute('aria-pressed', on?'true':'false');
+    }
+
+    l2Btn.addEventListener('click', function(){
+      state.l2=!state.l2;
+      setPressed(l2Btn, state.l2);
+      reset();
+    });
+    dropBtn.addEventListener('click', function(){
+      state.drop=!state.drop;
+      setPressed(dropBtn, state.drop);
+      reset();
+    });
+    restartBtn.addEventListener('click', reset);
+
+    reset();
+
+    var ticker=NN.createTicker(root, function(t){
+      if(state.step>=state.max) return;
+      if(state.lastT && t-state.lastT<30) return;
+      state.lastT=t;
+      var n=0;
+      while(n<3 && state.step<state.max){ trainOne(); n++; }
+      if(state.step-state.lastRec>=40 || state.step>=state.max) record();
+    });
+    ticker.start();
+  }));
+
+  defineDemo('d-07-capacity', whenNN(function(root){
+    var canvas=root.querySelector('#cv-07-cap');
+    var slider=root.querySelector('#s-07-cap');
+    var widthOut=root.querySelector('#o-07-cap');
+    var paramOut=root.querySelector('#o-07-params');
+
+    var state={net:null, width:64, step:0, max:2400, rng:null,
+      lastRec:-1, lastT:0, m:{ta:0.5, va:0.5}};
+
+    function takeBatch(){
+      return state.data.train;
+    }
+
+    function trainOne(){
+      trainStep(state.net, takeBatch(), 0.01, {l2:0, drop:0, rng:state.rng});
+      state.step++;
+    }
+
+    function drawBars(){
+      NN.barChart(canvas, [
+        {label:'训练准确率', value:state.m.ta, color:'--c1', text:Math.round(state.m.ta*100)+'%'},
+        {label:'验证准确率', value:state.m.va, color:'--c2', text:Math.round(state.m.va*100)+'%'}
+      ], {max:1, height:120});
+    }
+
+    function refreshBars(){
+      state.m=evaluate(state.net, state.data.train, state.data.val);
+      state.lastRec=state.step;
+      drawBars();
+      paramOut.textContent=commas(state.width*state.width+6*state.width+2);
+    }
+
+    function build(width){
+      state.width=width;
+      state.net=makeNet([2,width,width,2], 7);
+      state.rng=NN.mulberry32(99);
+      state.data=makeData();
+      state.step=0; state.lastRec=-1;
+      for(var i=0;i<160;i++) trainOne();
+      refreshBars();
+    }
+
+    var pending=null;
+    slider.addEventListener('input', function(){
+      var w=+slider.value;
+      widthOut.textContent=String(w);
+      if(pending) clearTimeout(pending);
+      pending=setTimeout(function(){ build(w); }, 140);
+    });
+
+    build(+slider.value);
+    var theme=window.Theme||(window.NN&&NN.Theme);
+    if(theme&&typeof theme.on==='function') theme.on(drawBars);
+    window.addEventListener('resize', drawBars);
+
+    var ticker=NN.createTicker(root, function(t){
+      if(state.step>=state.max) return;
+      if(state.lastT && t-state.lastT<30) return;
+      state.lastT=t;
+      var n=0;
+      while(n<3 && state.step<state.max){ trainOne(); n++; }
+      if(state.step-state.lastRec>=120 || state.step>=state.max) refreshBars();
+    });
+    ticker.start();
+  }));
+})();
+</script>

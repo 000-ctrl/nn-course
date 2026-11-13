@@ -1,0 +1,430 @@
+<section class="ch" id="ch-00-start" data-num="00" data-title="从零开始">
+  <div class="hero">
+    <div class="ch-eyebrow"><span class="dot"></span>第 00 章 · 起步</div>
+    <h1>从零开始<span class="thin">,学会用数据拟合函数</span></h1>
+    <p>这本书不承诺七天速成,也不假装数学可以完全跳过。它承诺两件事:每个概念都先给直觉,再给公式,再给一个你能亲手拖动的演示;读完 18 个部分,你能自己写出训练循环,并且看懂大模型新闻里的术语。总共大约 9 到 12 小时。</p>
+    <div class="hero-actions">
+      <a class="btn primary" href="#ch-01-neuron">开始第 1 章</a>
+      <a class="btn" href="#ch-01-neuron" id="continueBtn">继续学习</a>
+    </div>
+  </div>
+
+  <div class="prereq"><b>读前</b><span>高中数学:函数、坐标与求和;本章是全书第一章,不依赖前面的章节</span><b>可跳过</b><span>0.6 的 PyTorch 代码块可整段跳过,不影响主线;0.2、0.3 的演示也可只看结论</span></div>
+
+  <p class="lead">先给结论:神经网络(neural network)是一类带参数的函数;训练(training)就是用数据把这组参数调到「输出尽量接近答案」。这一章不推导复杂公式,先把这句话讲透,再告诉你全书怎么读、演示怎么用。</p>
+
+  <h3><span class="h3-n">0.1</span>神经网络只做一件事:用数据拟合函数</h3>
+  <p>神经网络不是一套写好的规则,而是一个函数。你给它输入 <var>x</var>,例如一张 28×28 的灰度图;它输出 <var>y</var>,例如「这张图是数字 7 的概率为 0.93」。函数内部做的事,归根到底是许多次加权求和,再穿插几次简单的非线性变换。参与求和的系数叫权重(weight),额外的常数叫偏置(bias),它们合称参数(parameter)。一个 2→16→16→2(2 输入→两层各 16 单元→2 输出)的小网络有 354 个参数,数字不大,却足以围出一个闭合的环。</p>
+  <p>手写规则的思路是先把条件想清楚,再写进代码。判断垃圾邮件,你可能会写:同时出现「中奖」「汇款」「点击链接」就拦截。发件人把「中奖」写成「中奬」,规则立刻失效;你再补一条,再补一条,补到 300 条时,规则开始互相矛盾,维护成本超过收益。学习的思路相反:准备 5,000 封人工标注(label)过的邮件,让程序自己找一组参数。没有人告诉它「中奬」是错别字,它从字符组合的统计里学到这两个词很像。</p>
+  <p>差别不在谁更聪明,而在知识写在哪里。规则把知识写在人的代码里,学习把知识写在参数里。参数可以批量更新:改 354 个数,比改 3,000 行 if 容易;同一套训练代码换一份数据就能重跑。代价是,你必须相信数据、检查数据,并且接受模型可能学到你不想要的东西。</p>
+
+  <div class="callout key">
+    <b>一句话</b>神经网络 = 选一个函数形状 <var>f</var>,用数据定它的参数 <var>θ</var>。所谓「学习」,就是在一个事先定好的损失函数上做数值优化。
+  </div>
+
+  <div class="math"><var>y</var> = <var>f</var>(<var>x</var>; <var>θ</var>)　　<var>θ</var>* = argmin<sub><var>θ</var></sub> (1/<var>N</var>) Σ <var>L</var>(<var>f</var>(<var>x</var><sub>i</sub>; <var>θ</var>), <var>y</var><sub>i</sub>)</div>
+  <p>普通话翻译:<var>Σ</var> 是求和(sigma),argmin 是取使后面式子最小的参数。在所有候选参数 <var>θ</var> 里,挑一个让 <var>N</var> 个样本的平均损失(loss)最小的。<var>L</var> 衡量「预测和答案差多少」,常见的一种是交叉熵(cross-entropy),第 01 章会具体算。梯度(gradient)告诉你,参数往哪个方向挪一点,损失下降最快。整本书剩下的内容,基本都在回答三个问题:函数形状怎么选、参数怎么更新、怎样判断它真的学会了。</p>
+  <p>这里要先泼一盆冷水:神经网络不保证「理解」。它保证的是在训练分布上把损失压低。数据里有偏见,它会学偏见;标签有错误,它会学错误;测试场景和训练场景差得远,它的准确率会掉。把这一点记住,后面每学一个技巧,你都会多问一句:它到底在优化什么?</p>
+
+  <h3><span class="h3-n">0.2</span>规则与学习:差距可以量出来</h3>
+  <p>下面用一组人造数据把差距量出来。240 个点分两类:内圈半径约 0.55,外圈半径约 1.3,各 120 个。一条直线 <var>a</var>·<var>x</var><sub>1</sub> + <var>b</var>·<var>x</var><sub>2</sub> = <var>c</var> 把平面切成两个半平面:它可以切掉外圈的一小块,却没法把内圈整个包起来。所以线性判据的准确率(accuracy)上限大约 71%,这不是调参问题,而是函数形状不够。真正让边界拐弯的,是隐藏层(hidden layer,夹在输入输出之间的层)里的折线函数,例如修正线性单元(ReLU,rectified linear unit):它把负数压成 0,正数原样通过。右边的小网络还是 354 个参数,在同样的 240 个点上训练了 400 步,每步抽 32 个点,学习率(learning rate)0.03,优化器(optimizer)Adam,最后学到的是一个闭合的环。</p>
+
+  <div class="demo" id="d-00-rule">
+    <div class="demo-bar"><span class="live">交互</span><span>规则 vs 学习:同一条数据,两种边界</span><span class="sp"></span><span class="tag">拖动滑块</span></div>
+    <div class="demo-body">
+      <div class="grid-2">
+        <div class="canvas-wrap"><canvas id="cv-00-rule" height="260"></canvas></div>
+        <div class="canvas-wrap"><canvas id="cv-00-learn" height="260"></canvas></div>
+      </div>
+      <div class="controls">
+        <div class="ctl"><label for="s-00-a">a <output id="o-00-a">1.0</output></label><input id="s-00-a" type="range" min="-2" max="2" step="0.1" value="1"></div>
+        <div class="ctl"><label for="s-00-b">b <output id="o-00-b">0.0</output></label><input id="s-00-b" type="range" min="-2" max="2" step="0.1" value="0"></div>
+        <div class="ctl"><label for="s-00-c">c <output id="o-00-c">0.0</output></label><input id="s-00-c" type="range" min="-2" max="2" step="0.1" value="0"></div>
+        <button class="btn primary" id="b-00-more">重新初始化并训练</button>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><b id="o-00-rule-acc">50.0%</b><span>手写直线准确率</span></div>
+        <div class="stat"><b id="o-00-net-acc">—</b><span>学习边界准确率</span></div>
+        <div class="stat"><b id="o-00-net-step">400</b><span>已训练步数</span></div>
+      </div>
+    </div>
+    <div class="demo-hint">拖动 a、b、c 改变左手写判据;右侧是 354 个参数的小网络训练 400 步后的边界。看两边准确率差多少,或点按钮换一组初始化重训。蓝色和橙色分别代表两类点。</div>
+  </div>
+
+  <p>拖动滑块时注意两件事。第一,准确率很难超过 72%:直线没有「半径」这个概念,它最多切掉外圈的一块,围不住内圈。第二,右侧网络的边界不是完美的圆,边缘有些毛刺;这来自有限参数和有限训练步数。把 <var>a</var>、<var>b</var> 都拖到 0,直线消失,判据退化成「全部预测同一类」,准确率正好 50%。你也可以点「重新初始化并训练」,换一组随机初始值从头跑 400 步。两次的准确率通常都能到 100%,但边界毛刺的位置不同:数据有限时,同样好的解不止一个。</p>
+
+  <div class="callout warn">
+    <b>常见误解</b>网络参数越多,效果一定越好。参数多只代表容量(capacity)大,不代表泛化(generalization)好,也更容易过拟合(overfitting)。上面 354 个参数的网络能到 97%,但换 240 个带 30% 错标的点,它同样会用 354 个参数把错误背下来。决定上限的首先是数据质量和任务本身,其次才是模型大小。
+  </div>
+
+  <div class="quiz" data-id="q-00-1">
+    <p class="q">同样区分内圈和外圈,一条直线判据最多约 71%,训练好的小网络能到 97% 以上。最准确的原因是?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="参数多只说明容量大,不会自动提高准确率;一个 42 个参数的小网络(2→8→2)也能围出圆环。数据有噪声时,参数多反而更容易过拟合。">网络参数更多,所以一定更强。</button>
+      <button class="opt" data-k="B" data-ok data-why="隐藏层把输入做了非线性组合。ReLU 把平面折成多块,多个隐藏单元拼出闭合边界;直线只有两个半平面,形状上就不可能围住内圈。">隐藏层对输入做了非线性组合,能表达直线表达不了的弯曲边界。</button>
+      <button class="opt" data-k="C" data-why="240 个点、354 个参数,就算硬背也不能保证新点。演示看的是边界形状,不是查表;真正发生的是参数被调成了一条环形边界。">网络把 240 个点的坐标背了下来。</button>
+      <button class="opt" data-k="D" data-why="直线只能切出两个半平面,最优大约 71%:它能切掉外圈的一块,却围不住内圈。这已经是函数形状的限制,不是三个系数没调好。">直线判据的三个系数没有调到最优。</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">0.3</span>一次训练的全过程</h3>
+  <p>第二个演示自动循环播放一次 300 步的训练。左边是决策边界(decision boundary),右边是损失曲线。开始那一帧,边界是一条直线:我把网络的前两个隐藏单元(hidden unit)初始化成一对互补的 ReLU(同一输入 z 分别过 ReLU(z) 与 ReLU(−z),相减得 z),让两者的差恰好等于一个线性函数。这样你能看到从线性到非线性的全过程,而不是一上来就随机弯折。</p>
+  <p>训练每帧走 2 步,每步 32 个点。损失从 0.7 附近降到 0.1 以下,训练集(training set)准确率从 63% 左右升到接近 100%。300 步之后停 1.5 秒再重播。右图的损失会抖:小批量(mini-batch)每次只抽 32 个点,梯度有噪声,这是随机梯度下降(stochastic gradient descent, SGD)的常态。把所有训练样本完整过一遍叫一轮(epoch):演示里 220 个点、每步抽 32 个,一轮大约 7 步,300 步约 44 轮。看趋势,不要看单个点。</p>
+
+  <div class="demo" id="d-00-hook">
+    <div class="demo-bar"><span class="live">自动</span><span>一次训练:边界从直线弯成曲线</span><span class="sp"></span><span class="tag">循环播放</span></div>
+    <div class="demo-body">
+      <div class="grid-2">
+        <div class="canvas-wrap"><canvas id="cv-00-hook-b" height="260"></canvas></div>
+        <div class="canvas-wrap"><canvas id="cv-00-hook-l" height="260"></canvas></div>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><b id="o-00-hook-step">0</b><span>已训练步数</span></div>
+        <div class="stat"><b id="o-00-hook-loss">1.00</b><span>当前损失</span></div>
+        <div class="stat"><b id="o-00-hook-acc">—</b><span>训练集准确率</span></div>
+      </div>
+    </div>
+    <div class="demo-hint">无需操作,约 5 秒一轮:左边决策边界从直线弯成环绕两个月牙的形状,右边损失曲线同步下降。</div>
+  </div>
+
+  <p>留意边界弯曲的方式:它不是一次性变成圆,而是先在一个角上鼓出来,再逐渐围拢。这就是隐藏层(hidden layer)的工作方式——每个 ReLU 单元贡献一条折线,16 个单元拼出许多段折线,折线足够多,就能逼近弯曲的边界。第 04 章会把这件事画成网格:同样 16 个单元,为什么有的摆法能分开月牙,有的不能。</p>
+
+  <h3><span class="h3-n">0.4</span>全书地图:18 个部分</h3>
+  <p>全书 18 个部分,按依赖关系排成四段。0—3 建立最小工具;4—7 是核心机制;8—12 拆开主流架构;13—14 把零件装成系统;A—C 是随时可查的附录。第一次读建议按顺序,第 8 章之后可以按兴趣跳。只想看懂大模型,最低路线是 0—7、9、10、14。第 9 章不能跳:第 10 章的注意力机制是作为循环网络的替代方案引入的,开篇先讲「按顺序一步一步传状态」的局限——长距离依赖会被稀释、计算只能串行——再说明注意力如何绕开这两点。没有第 9 章的铺垫,第 10 章的动机和对照都接不上。跳过 8、11—13 只是少看几类架构,跳过 9 会直接卡在 10 的门槛上。</p>
+
+  <div class="map">
+    <a href="#ch-00-start"><span class="m-num">00</span><span class="m-title">从零开始</span><span class="m-desc">这本书讲什么,以及怎么读、怎么练。</span></a>
+    <a href="#ch-01-neuron"><span class="m-num">01</span><span class="m-title">一个神经元</span><span class="m-desc">从一次加权求和开始,理解最小的学习单元。</span></a>
+    <a href="#ch-02-matrix"><span class="m-num">02</span><span class="m-title">矩阵与张量</span><span class="m-desc">把成千上万个权重写成一次矩阵乘法。</span></a>
+    <a href="#ch-03-gradient"><span class="m-num">03</span><span class="m-title">梯度与学习</span><span class="m-desc">用导数告诉参数该往哪个方向挪。</span></a>
+    <a href="#ch-04-mlp"><span class="m-num">04</span><span class="m-title">多层网络</span><span class="m-desc">隐藏层如何把一条直线弯成曲线。</span></a>
+    <a href="#ch-05-backprop"><span class="m-num">05</span><span class="m-title">反向传播</span><span class="m-desc">误差如何从输出一层层传回每个参数。</span></a>
+    <a href="#ch-06-train"><span class="m-num">06</span><span class="m-title">训练循环</span><span class="m-desc">数据、批次、学习率、优化器怎么配合。</span></a>
+    <a href="#ch-07-generalize"><span class="m-num">07</span><span class="m-title">过拟合与泛化</span><span class="m-desc">为什么训练集满分不等于真的学会。</span></a>
+    <a href="#ch-08-conv"><span class="m-num">08</span><span class="m-title">卷积网络</span><span class="m-desc">用局部窗口和权重共享处理图像。</span></a>
+    <a href="#ch-09-sequence"><span class="m-num">09</span><span class="m-title">循环网络</span><span class="m-desc">让网络记住上一步,处理序列数据。</span></a>
+    <a href="#ch-10-attention"><span class="m-num">10</span><span class="m-title">注意力与 Transformer</span><span class="m-desc">让每个位置直接看到所有位置。</span></a>
+    <a href="#ch-11-generative"><span class="m-num">11</span><span class="m-title">生成模型</span><span class="m-desc">从自编码器到扩散模型,怎么造出新样本。</span></a>
+    <a href="#ch-12-modality"><span class="m-num">12</span><span class="m-title">图像·文本·音频·视频</span><span class="m-desc">同一套网络怎么吃下不同模态。</span></a>
+    <a href="#ch-13-design"><span class="m-num">13</span><span class="m-title">设计你自己的网络</span><span class="m-desc">从问题到数据到架构的决策清单。</span></a>
+    <a href="#ch-14-llm"><span class="m-num">14</span><span class="m-title">大模型时代</span><span class="m-desc">参数量、预训练、对齐分别在做什么。</span></a>
+    <a href="#ch-ap-a"><span class="m-num">A</span><span class="m-title">数学速查</span><span class="m-desc">需要的代数、导数、概率浓缩成几页。</span></a>
+    <a href="#ch-ap-b"><span class="m-num">B</span><span class="m-title">PyTorch 对照</span><span class="m-desc">把书里的公式翻译成可运行的代码。</span></a>
+    <a href="#ch-ap-c"><span class="m-num">C</span><span class="m-title">术语与路线</span><span class="m-desc">中英术语表和继续学习的方向。</span></a>
+  </div>
+
+  <h3><span class="h3-n">0.5</span>怎么用这本书</h3>
+  <ol class="steps">
+    <li><strong>读。</strong>每章开头有一段导语,直接说这章解决什么问题;公式后面都跟一句普通话解释;看不懂推导可以先跳过,记住结论和数字,回头再看。</li>
+    <li><strong>动手。</strong>每个演示都能拖、能点。先预测再操作:把滑块拖到你觉得「应该能分开」的位置,再看准确率。预测错了,记忆比读十遍定义更牢。</li>
+    <li><strong>检验。</strong>每章 2 到 4 道选择题,答对全部才算完成,章末打勾、徽章点亮。错项反馈会解释错在哪,不要只看对错。</li>
+  </ol>
+
+  <div class="callout tip">
+    <b>一个有效的小习惯</b>看到任何曲线,先问三件事:横轴是什么、纵轴是什么、它想证明什么。训练损失下降不代表测试准确率上升;这两件事在第 07 章会被彻底分开。
+  </div>
+
+  <p>准备方面:高中数学的代数运算就够;导数在第 03 章从零讲;会安装 Python 和 PyTorch 更好,不会也能读,代码可以先读懂再运行。时间方面:每章 25 到 45 分钟,全书 9 到 12 小时。一次读一章,比一次读五章有效。读完一章后合上书,用自己的话向一个没学过的人解释核心概念;解释不清的地方,就是需要重读的地方。</p>
+
+  <h4>18 枚徽章</h4>
+  <p>每章的全部测验答对,章末会自动打勾,对应徽章点亮。进度保存在这台设备的浏览器里,换设备不同步;侧栏底部可以重置。</p>
+  <div class="badge-grid" data-badges></div>
+
+  <h3><span class="h3-n">0.6</span>第一个可运行的例子</h3>
+  <p>下面这段 PyTorch 代码和演示里的网络同构:2 个输入、两层 16 个隐藏单元、2 个输出。数据是 240 个随机点,半径大于 1 记为类别 1。现在不必看懂每一行,只需认出三件事:模型定义、损失函数、backward 与 step。第 06 章会把它们逐行拆开。</p>
+
+  <div class="code-wrap"><div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div><pre class="code"><code>import torch, torch.nn as nn
+
+# 240 个二维点:半径大于 1 记为类别 1
+X = torch.randn(240, 2)
+y = ((X[:, 0] ** 2 + X[:, 1] ** 2) > 1.0).long()
+
+model = nn.Sequential(
+    nn.Linear(2, 16), nn.ReLU(),
+    nn.Linear(16, 16), nn.ReLU(),
+    nn.Linear(16, 2)
+)
+opt = torch.optim.Adam(model.parameters(), lr=0.03)
+loss_fn = nn.CrossEntropyLoss()
+
+for step in range(400):
+    logits = model(X)                 # 前向:算预测
+    loss = loss_fn(logits, y)         # 损失:预测和标签差多少
+    opt.zero_grad()                   # 清空上一步梯度
+    loss.backward()                   # 反向:算每个参数的梯度
+    opt.step()                        # 更新参数
+    if step % 50 == 0:
+        acc = (logits.argmax(1) == y).float().mean().item()
+        print(step, round(loss.item(), 3), round(acc, 3))
+</code></pre></div>
+
+  <p>在一台普通 CPU 上,这段代码大约 2 秒跑完。损失通常从 0.7 附近降到 0.1 以下,准确率升到 95% 以上;具体数字随随机种子波动。如果损失不降,先检查标签和输入是否对齐,再检查学习率是不是大了 10 倍——这两类错误比「网络不够深」常见得多。</p>
+
+  <div class="quiz" data-id="q-00-2">
+    <p class="q">训练循环的每一步,被更新的是什么?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="标签是监督信号,训练不会改它;改标签属于重新标注,是人的工作。">训练数据的标签。</button>
+      <button class="opt" data-k="B" data-ok data-why="反向传播算出损失对每个参数的梯度,优化器按梯度更新权重和偏置;数据、标签、网络结构在训练前就固定了。">网络的权重和偏置。</button>
+      <button class="opt" data-k="C" data-why="学习率是超参数(hyperparameter),由你在训练前设定;梯度不会更新它。">学习率。</button>
+      <button class="opt" data-k="D" data-why="特征个数由数据决定,训练不会增删列;改它需要重新做特征工程。">输入特征的个数。</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <div class="quiz" data-id="q-00-3">
+    <p class="q">如果你把 30% 的训练标签标反,再把网络加深,最可能发生什么?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="损失函数只比较输出和你给的标签,没有「真相」可对照;它没有机制知道哪 30% 是错的。">网络会自己发现并纠正错误标签。</button>
+      <button class="opt" data-k="B" data-ok data-why="优化目标就是你给的标签。错标比例高时,模型会认真地把错误模式也学进去,训练准确率不一定低,测试时暴露。">网络会拟合这些错误,训练准确率不一定低,但学到的是错误规律。</button>
+      <button class="opt" data-k="C" data-why="错标改变的是优化目标本身,不只是速度;加深网络只会让它更有能力拟合错误。">只会训练变慢,最终结果不变。</button>
+      <button class="opt" data-k="D" data-why="交叉熵在概率合法时非负,错标不会让损失变成负数;它会让损失停在较高水平,或让模型学到错误边界。">损失会变成负数。</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <div class="ch-foot">
+    <span class="state" data-state></span>
+    <span class="sp"></span>
+    <a class="btn" href="#ch-01-neuron">下一章 →</a>
+  </div>
+</section>
+
+<script>
+defineDemo('d-00-rule', function(root){
+  function start(){
+  const cvR = root.querySelector('#cv-00-rule');
+  const cvN = root.querySelector('#cv-00-learn');
+  const sA = root.querySelector('#s-00-a');
+  const sB = root.querySelector('#s-00-b');
+  const sC = root.querySelector('#s-00-c');
+  const oA = root.querySelector('#o-00-a');
+  const oB = root.querySelector('#o-00-b');
+  const oC = root.querySelector('#o-00-c');
+  const oRule = root.querySelector('#o-00-rule-acc');
+  const oNet = root.querySelector('#o-00-net-acc');
+  const oStep = root.querySelector('#o-00-net-step');
+  const btnMore = root.querySelector('#b-00-more');
+  const BOUNDS = [[-1.75, 1.75], [-1.75, 1.75]];
+  const pts = window.Data.circle(240, 11);
+  const rng = NN.mulberry32(21);
+  let net = new NN.MLP([2, 16, 16, 2], {act: 'relu', out: 'softmax', seed: 7});
+  let seed = 7;
+  let steps = 0;
+  let budget = 0;
+  let tick = null;
+
+  function train(n){
+    for(let k = 0; k < n; k++){
+      const batch = [];
+      for(let i = 0; i < 32; i++) batch.push(pts[(rng() * pts.length) | 0]);
+      net.step(batch, 0.03, {opt: 'adam'});
+      steps++;
+    }
+  }
+
+  function ruleParams(){
+    return [+sA.value, +sB.value, +sC.value];
+  }
+
+  function ruleAccuracy(){
+    const q = ruleParams();
+    let ok = 0;
+    for(let i = 0; i < pts.length; i++){
+      const p = pts[i];
+      const pred = (q[0] * p.x[0] + q[1] * p.x[1] - q[2]) > 0 ? 1 : 0;
+      if(pred === p.y) ok++;
+    }
+    return ok / pts.length;
+  }
+
+  function drawRule(){
+    const fit = NN.fitCanvas(cvR, 260);
+    const ctx = fit.ctx, w = fit.w, h = fit.h;
+    const x0 = BOUNDS[0][0], x1 = BOUNDS[0][1], y0 = BOUNDS[1][0], y1 = BOUNDS[1][1];
+    const X = function(v){ return (v - x0) / (x1 - x0) * w; };
+    const Y = function(v){ return h - (v - y0) / (y1 - y0) * h; };
+    ctx.clearRect(0, 0, w, h);
+
+    const line = NN.token('--line2', '#dddddd');
+    const muted = NN.token('--muted', '#777777');
+    ctx.strokeStyle = line;
+    ctx.globalAlpha = 0.6;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for(let v = -1.5; v <= 1.5001; v += 0.5){
+      ctx.moveTo(X(v), 0); ctx.lineTo(X(v), h);
+      ctx.moveTo(0, Y(v)); ctx.lineTo(w, Y(v));
+    }
+    ctx.stroke();
+    ctx.strokeStyle = muted;
+    ctx.globalAlpha = 0.55;
+    ctx.beginPath();
+    ctx.moveTo(X(0), 0); ctx.lineTo(X(0), h);
+    ctx.moveTo(0, Y(0)); ctx.lineTo(w, Y(0));
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    const cols = [NN.token('--c1', '#2a78d6'), NN.token('--c2', '#eb6834')];
+    for(let i = 0; i < pts.length; i++){
+      const p = pts[i];
+      ctx.beginPath();
+      ctx.arc(X(p.x[0]), Y(p.x[1]), 3.3, 0, NN.TAU);
+      ctx.fillStyle = cols[p.y];
+      ctx.fill();
+      ctx.strokeStyle = NN.token('--surface', '#ffffff');
+      ctx.lineWidth = 1.1;
+      ctx.stroke();
+    }
+
+    const q = ruleParams();
+    if(Math.abs(q[0]) + Math.abs(q[1]) > 1e-6){
+      let p1, p2;
+      if(Math.abs(q[1]) >= Math.abs(q[0])){
+        p1 = [x0, (q[2] - q[0] * x0) / q[1]];
+        p2 = [x1, (q[2] - q[0] * x1) / q[1]];
+      } else {
+        p1 = [(q[2] - q[1] * y0) / q[0], y0];
+        p2 = [(q[2] - q[1] * y1) / q[0], y1];
+      }
+      ctx.strokeStyle = NN.token('--ink', '#111111');
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.moveTo(X(p1[0]), Y(p1[1]));
+      ctx.lineTo(X(p2[0]), Y(p2[1]));
+      ctx.stroke();
+    }
+
+    oA.textContent = (+sA.value).toFixed(1);
+    oB.textContent = (+sB.value).toFixed(1);
+    oC.textContent = (+sC.value).toFixed(1);
+    oRule.textContent = (ruleAccuracy() * 100).toFixed(1) + '%';
+  }
+
+  function drawNet(){
+    NN.renderBoundary(cvN, net, {points: pts, bounds: BOUNDS, height: 260, soft: true, res: 56});
+    oNet.textContent = (net.accuracy(pts) * 100).toFixed(1) + '%';
+    oStep.textContent = String(steps);
+  }
+
+  function drawBoth(){
+    drawRule();
+    drawNet();
+  }
+
+  if(window.Theme){
+    window.Theme.on(function(){
+      if(root.offsetParent !== null) drawBoth();
+    });
+  }
+
+  [sA, sB, sC].forEach(function(s){
+    s.addEventListener('input', drawRule);
+  });
+
+  btnMore.addEventListener('click', function(){
+    seed = (seed * 7 + 3) % 1000;
+    net = new NN.MLP([2, 16, 16, 2], {act: 'relu', out: 'softmax', seed: seed});
+    steps = 0;
+    budget = 400;
+    drawNet();
+    if(!tick){
+      tick = NN.createTicker(root, function(){
+        if(budget <= 0) return;
+        const n = Math.min(2, budget);
+        train(n);
+        budget -= n;
+        drawNet();
+        if(budget === 0){
+          NN.toast('训练完成,准确率 ' + (net.accuracy(pts) * 100).toFixed(1) + '%');
+        }
+      });
+    }
+    tick.start();
+  });
+
+  train(400);
+  drawBoth();
+  }
+  if(window.NN) start();
+  else setTimeout(start, 0);
+});
+
+defineDemo('d-00-hook', function(root){
+  function start(){
+  const cvB = root.querySelector('#cv-00-hook-b');
+  const cvL = root.querySelector('#cv-00-hook-l');
+  const oStep = root.querySelector('#o-00-hook-step');
+  const oLoss = root.querySelector('#o-00-hook-loss');
+  const oAcc = root.querySelector('#o-00-hook-acc');
+  const BOUNDS = [[-1.6, 2.6], [-1.3, 1.8]];
+  const pts = window.Data.moons(220, 5);
+  const MAX = 300, PER = 2, BATCH = 32;
+  const plot = new NN.Plot(cvL, {
+    xLabel: '训练步数',
+    yLabel: '损失',
+    height: 260,
+    yRange: [0, 1.4],
+    series: [{name: '训练损失', color: '--c2', data: [[0, 1]]}]
+  });
+  let net, data, hist, step, hold, cursor, lastLoss;
+
+  function initLinear(m){
+    const W0 = m.W[0], b0 = m.b[0], W1 = m.W[1], b1 = m.b[1];
+    const w0 = 0.9, w1 = 0.6, bb = 0.15;
+    W0[0] = w0; W0[1] = w1; b0[0] = bb;
+    W0[2] = -w0; W0[3] = -w1; b0[1] = -bb;
+    W1.fill(0);
+    b1.fill(0);
+    W1[16] = 1;
+    W1[17] = -1;
+  }
+
+  function reset(){
+    net = new NN.MLP([2, 16, 2], {act: 'relu', out: 'softmax', seed: 11});
+    initLinear(net);
+    data = NN.shuffle(pts.slice(), NN.mulberry32(77));
+    hist = [[0, net.loss(data)]];
+    step = 0;
+    hold = 0;
+    cursor = 0;
+    lastLoss = hist[0][1];
+    plot.set({series: [{name: '训练损失', color: '--c2', data: hist}]});
+  }
+
+  reset();
+
+  let frame = 0;
+  const ticker = NN.createTicker(root, function(){
+    frame++;
+    if(step < MAX){
+      for(let k = 0; k < PER && step < MAX; k++){
+        const batch = [];
+        for(let i = 0; i < BATCH; i++){
+          batch.push(data[cursor % data.length]);
+          cursor++;
+        }
+        net.step(batch, 0.03, {opt: 'adam'});
+        step++;
+      }
+      lastLoss = net.loss(data);
+      if(step % 5 === 0 || step === MAX){
+        hist.push([step, lastLoss]);
+        plot.set({series: [{name: '训练损失', color: '--c2', data: hist}]});
+      }
+    } else {
+      hold++;
+      if(hold > 100) reset();
+    }
+
+    oStep.textContent = String(step);
+    oLoss.textContent = lastLoss.toFixed(2);
+    oAcc.textContent = (net.accuracy(data) * 100).toFixed(1) + '%';
+    if(frame % 2 === 0) NN.renderBoundary(cvB, net, {points: data, bounds: BOUNDS, height: 260, soft: true, res: 48});
+  });
+  ticker.start();
+  }
+  if(window.NN) start();
+  else setTimeout(start, 0);
+});
+</script>

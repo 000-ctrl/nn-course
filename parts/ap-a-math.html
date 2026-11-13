@@ -1,0 +1,801 @@
+<section class="ch" id="ch-ap-a" data-num="A" data-title="数学速查">
+  <header class="ch-head">
+    <div class="ch-eyebrow"><span class="dot"></span>附录 A · 数学</div>
+    <h1 class="ch-title">数学速查</h1>
+    <p class="ch-sub">只讲这本书真正用到的十个数学工具,每条都配几何直觉和它在网络里的位置。</p>
+    <div class="ch-rule"></div>
+  </header>
+
+  <div class="prereq"><b>读前</b><span>第 1 章的神经元与激活函数;标签编码(one-hot)见第 5 章 5.3 或第 6.2 节;第 5 章的链式法则与反向传播;第 6 章的输入维度与权重初始化。没读前文会吃力,建议先补这些概念。</span><b>可跳过</b><span>A.3、A.5 的交互演示、A.5 末尾的 Python 代码块和 A.5 的推导折叠块,跳过不影响主线。</span></div>
+
+  <p class="lead">这一章不新增网络结构,只把后面反复出现的数学摊开。每个工具回答三件事:几何上它是什么、公式怎么写、它在网络的哪一行出现。公式不用背,先抓住图景,需要时回来查表。</p>
+
+  <h3><span class="h3-n">A.1</span>向量与点积</h3>
+  <p>向量(vector)可以看成一支箭头,也可以看成一串有序的数。二维向量 (3, 4) 的意思是:沿 x 走 3,沿 y 走 4。它的长度是 √(3²+4²)=5。神经网络里的一个样本、一层激活、一个词的嵌入(embedding),本质上都是向量;一张 28×28 的灰度图也能拉成 784 维向量。</p>
+  <p>两个向量 a 和 b 的点积(dot product)有两种等价写法:</p>
+  <div class="math">a · b = a<sub>1</sub>b<sub>1</sub> + a<sub>2</sub>b<sub>2</sub> + … + a<sub>n</sub>b<sub>n</sub> = |a||b|cos θ</div>
+  <p>左边是“逐项相乘再相加”,右边是“长度乘长度乘夹角余弦”。左边适合写代码,右边适合想几何。</p>
+  <p>几何直觉:把 b 投影到 a 的方向上,投影长度是 |b|cos θ;点积就是这个投影长度再乘以 |a|。同向时 cos θ=1,点积最大;垂直时 cos θ=0,点积为 0;反向时点积为负。所以点积衡量的是两个向量的对齐程度,而不是它们各自的绝对大小。</p>
+  <p>算一个具体例子。w=(2, -1),x=(3, 4):w·x=2×3+(-1)×4=2。|w|=√5≈2.236,|x|=5,cos θ=2/(2.236×5)=0.179,θ≈79.7°。x 在 w 方向上的投影长度是 2/2.236≈0.894,很短,说明这两个向量几乎垂直。</p>
+  <p>它在神经网络的哪里出现:一个神经元的加权和是 z=w·x+b,点积就是“每个输入乘一个权重再相加”;注意力(attention)里的打分 q·k 是点积;判断两个词向量像不像,用余弦相似度(cosine similarity),它只是把点积除以两个长度。卷积核在图像上滑动时,每个位置的响应也是一个小块与卷积核的点积。</p>
+
+  <h3><span class="h3-n">A.2</span>矩阵乘法</h3>
+  <p>矩阵(matrix)是向量的批量版本,也是一个空间变换。一个 m×n 矩阵把 n 维向量变成 m 维向量。矩阵乘法的规则只有一句:左边矩阵的每一行,和右边矩阵的每一列做点积。式子里的 Σ<sub>k</sub> 是求和(sum),即对 k 逐项相加。</p>
+  <div class="math">C<sub>ij</sub> = Σ<sub>k</sub> A<sub>ik</sub>B<sub>kj</sub>,&nbsp;&nbsp;(m×n)(n×p)=m×p</div>
+  <p>具体算一遍:</p>
+  <div class="math">[[1,2],[3,4]] × [[5,0],[6,1]] = [[17,2],[39,4]]</div>
+  <p>17=1×5+2×6,2=1×0+2×1,39=3×5+4×6,4=3×0+4×1。每个输出格子都是一次长度为 2 的点积;整个乘法做了 8 次乘加。注意 [[1,2],[3,4]]×[[5,0],[6,1]] 与交换顺序后的结果并不相同,矩阵乘法不满足交换律,很多时候两个矩阵连形状都对不上。</p>
+  <p>神经网络把它用在批量上。32 个样本、每个 128 维,记作 X(32×128);权重 W(128×64)。Z=XW 的形状是 32×64,每个样本得到 64 个神经元的加权和。这一次乘法做 32×128×64=262,144 次乘加。若再加偏置 b(长度 64),Z+b 会把 b 广播到 32 行,每一行都加同一个偏置。</p>
+  <p>它在神经网络的哪里出现:每一个全连接层都是一个矩阵乘法;Transformer 的 QK<sup>T</sup> 是矩阵乘法;卷积可以用 im2col 展开成矩阵乘法;嵌入表查表等价于用一个 one-hot(独热:只有一位为 1,其余为 0)向量乘嵌入矩阵。矩阵乘法之所以是深度学习的地基,是因为 GPU 最擅长把大量点积并行算完。</p>
+
+  <div class="quiz" data-id="q-ap-a-1">
+    <p class="q">一个 batch 有 32 个样本,每个样本 128 维;权重矩阵 W 的形状是 128×64,没有 bias。XW 的形状是什么?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-ok data-why="对。X 是 32×128,W 是 128×64,中间的 128 对上,结果取外层 32×64。每个样本得到 64 个输出。">32×64</button>
+      <button class="opt" data-k="B" data-why="错在把 batch 维丢了。128×64 只是权重矩阵自己的形状;XW 的每一行对应一个样本,所以结果一定保留 32 这一维。">128×64</button>
+      <button class="opt" data-k="C" data-why="错在把 W 转置了。只有 X 的列数 128 与 W 的行数 128 才能相乘;如果写成 XW<sup>T</sup>,形状是 (32×128)(64×128),内维 128 和 64 对不上,根本不能乘。">32×128</button>
+      <button class="opt" data-k="D" data-why="错在把结果的行列顺序反了。矩阵乘法不交换;XW 是 32 行 64 列,不是 64 行 32 列。">64×32</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">A.3</span>导数、导数表与链式法则</h3>
+  <p>导数(derivative)是函数在某一点的瞬时斜率。把曲线放大到足够近,它看起来像一条直线,这条直线的斜率就是导数,记作 f'(x) 或 dy/dx。导数为正,函数在上升;为负,函数在下降;为 0,切线水平。神经网络训练要找的是损失函数的谷底,所以导数告诉你“往左还是往右,坡度多陡”。</p>
+  <p>这本书用到的导数都在下表里。表里的 σ 是 sigmoid 函数(sigmoid),它把任意实数压到 0—1 之间;tanh 是双曲正切(hyperbolic tangent),形状相同,把它压到 −1—1 之间。不用一次背完,先看第三列:每一个导数都能对应到网络里的一个具体位置。</p>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>函数 f(x)</th><th>导数 f'(x)</th><th>在网络里的位置</th></tr></thead>
+      <tbody>
+        <tr><td class="num">x<sup>n</sup></td><td class="num">n·x<sup>n-1</sup></td><td>多项式损失、L2 权重衰减</td></tr>
+        <tr><td class="num">e<sup>x</sup></td><td class="num">e<sup>x</sup></td><td>softmax 的分子、指数族分布</td></tr>
+        <tr><td class="num">ln x</td><td class="num">1/x&nbsp;(x&gt;0)</td><td>交叉熵、对数似然</td></tr>
+        <tr><td class="num">σ(x)</td><td class="num">σ(x)(1-σ(x))</td><td>sigmoid 激活、门控单元</td></tr>
+        <tr><td class="num">tanh x</td><td class="num">1-tanh²x</td><td>RNN 隐藏状态、归一化层</td></tr>
+        <tr><td class="num">ReLU(x)=max(0,x)</td><td class="num">0 (x&lt;0),1 (x&gt;0)</td><td>隐藏层最常见的激活函数</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>表里最该记住的是 sigmoid 的导数 σ(x)(1-σ(x)):它的最大值只有 0.25,出现在 x=0;当 x 走到 ±6,导数降到 0.0025 左右。这解释了为什么 sigmoid 堆深了会梯度消失(gradient vanishing)。tanh 的导数最大是 1,比 sigmoid 好一点,但两端同样饱和。ReLU 在正半轴的导数恒为 1,所以深层网络更常用它;x=0 处严格说不可导,工程上取 0 或 1 都可以。</p>
+  <p>链式法则(chain rule)处理复合函数。若 y=f(u),u=g(x),则 dy/dx=(dy/du)(du/dx)。一句话:把沿路的斜率乘起来。复合多少层就乘多少次,顺序不重要,但不能漏掉任何一段。</p>
+  <p>例子:y=(3x+1)²。令 u=3x+1,dy/du=2u,du/dx=3,所以 dy/dx=6(3x+1)。在 x=1 处等于 24。展开验证:y=9x²+6x+1,导数 18x+6,在 x=1 处也是 24。两种算法一致,但链式法则不用展开,网络里几百万个参数也不可能展开。</p>
+  <p>多元函数把导数拆成偏导数(partial derivative):对某个变量求导时,其他变量当常数。把所有偏导数排成向量,就是梯度(gradient)。梯度指向函数上升最快的方向;沿负梯度走,函数下降最快。这就是梯度下降(gradient descent)的全部几何含义,学习率(learning rate)只决定每一步走多远。</p>
+  <p>它在神经网络的哪里出现:反向传播(backpropagation)不是新数学,它就是链式法则在计算图上从输出往输入乘一遍。softmax 加交叉熵的梯度能化简成 p-y,也是链式法则把 softmax 的雅可比和交叉熵的导数乘起来后消掉的结果。PyTorch 的 <code>loss.backward()</code> 做的就是这件事。</p>
+
+  <div class="demo" id="d-ap-a-slope">
+    <div class="demo-bar"><span class="live">交互</span><span>导数与切线</span><span class="sp"></span><span class="tag">拖动切点</span></div>
+    <div class="demo-body">
+      <div class="seg" id="seg-ap-a-fn">
+        <button data-f="sq" aria-pressed="true">x²</button>
+        <button data-f="cube" aria-pressed="false">x³</button>
+        <button data-f="sig" aria-pressed="false">sigmoid</button>
+        <button data-f="tanh" aria-pressed="false">tanh</button>
+      </div>
+      <div class="math" id="m-ap-a-slope">f(x) = x²,&nbsp;&nbsp;f'(x) = 2x</div>
+      <div class="canvas-wrap"><canvas id="cv-ap-a-slope" height="280"></canvas></div>
+      <div class="stat-row">
+        <div class="stat"><b id="v-ap-a-x">1.50</b><span>切点 x</span></div>
+        <div class="stat"><b id="v-ap-a-fx">2.25</b><span>函数值 f(x)</span></div>
+        <div class="stat"><b id="v-ap-a-dx">3.00</b><span>导数 f'(x)</span></div>
+        <div class="stat"><b id="v-ap-a-ang">71.6°</b><span>切线倾角</span></div>
+      </div>
+      <div class="controls">
+        <div class="ctl"><label for="s-ap-a-x">切点 x <output id="o-ap-a-x">1.50</output></label><input id="s-ap-a-x" type="range" min="-2.5" max="2.5" step="0.05" value="1.5"></div>
+      </div>
+    </div>
+    <div class="demo-hint">拖动滑块移动切点。蓝线是曲线,橙线是切线,绿色虚线三角形的竖直边除以水平边就是导数。切到 x³ 后把切点拖到 0:导数为 0,但函数既不是最大也不是最小。</div>
+  </div>
+
+  <div class="callout warn"><b>常见误解:导数为 0 就是最小值</b><p>导数为 0 只说明切线水平,可能是极大值、极小值,也可能是鞍点(saddle point)。x³ 在 x=0 处导数为 0,但函数从负穿到正,既不是最大也不是最小。高维网络里鞍点比局部极小值更常见;判断是不是极小值还要看二阶导数,或者看左右两侧函数值的变化。</p></div>
+
+  <div class="demo" id="d-ap-a-descent">
+    <div class="demo-bar"><span class="live">交互</span><span>沿导数下山</span><span class="sp"></span><span class="tag">自动运行</span></div>
+    <div class="demo-body">
+      <div class="math" id="m-ap-a-descent">f(w) = (w-3)²,&nbsp;&nbsp;f'(w) = 2(w-3)</div>
+      <div class="canvas-wrap"><canvas id="cv-ap-a-descent" height="260"></canvas></div>
+      <div class="stat-row">
+        <div class="stat"><b id="v-ap-a-step">7</b><span>已走步数</span></div>
+        <div class="stat"><b id="v-ap-a-w">2.414</b><span>当前 w</span></div>
+        <div class="stat"><b id="v-ap-a-loss">0.343</b><span>损失 f(w)</span></div>
+        <div class="stat"><b id="v-ap-a-grad">-1.174</b><span>梯度 f'(w)</span></div>
+      </div>
+      <div class="controls">
+        <div class="ctl"><label for="s-ap-a-lr">学习率 η <output id="o-ap-a-lr">0.12</output></label><input id="s-ap-a-lr" type="range" min="0.02" max="0.30" step="0.01" value="0.12"></div>
+        <button class="btn primary" id="b-ap-a-reset">重新下山</button>
+      </div>
+    </div>
+    <div class="demo-hint">打开时已经从 w=-1 走了 7 步。橙线是当前点的切线,每一步按 w ← w - η·f'(w) 移动。把学习率调到 0.02,下山会明显变慢;调到 0.30,前几步会跨得更远。</div>
+  </div>
+
+  <h3><span class="h3-n">A.4</span>对数:把乘法变成加法</h3>
+  <p>对数(logarithm)回答的是“底数要乘自己多少次才等于这个数”。log₂8=3,因为 2³=8;ln e=1;log₁₀1000=3。机器学习默认用自然对数 ln,底数是 e≈2.718;信息论里常用 log₂,单位是比特(bit)。自然对数的单位叫纳特(nat),1 纳特=1/ln2≈1.4427 比特。</p>
+  <p>两条性质最常用:log(ab)=log a+log b,log(a<sup>b</sup>)=b log a。第一条把乘法变成加法。为什么这件事重要?一个长度为 1000 的句子,概率是 1000 个数相乘;每个数都小于 1,乘到后面计算机直接下溢成 0。取对数后变成 1000 个数相加,既不会下溢,也好求导。</p>
+  <p>概率 p 在 (0, 1] 之间,所以 ln p≤0,-ln p≥0。p=1 时 -ln p=0;p=0.5 时 0.693;p=0.1 时 2.303;p=0.01 时 4.605。概率每差 10 倍,损失差 2.303 纳特。ln1000≈6.908 纳特,换成比特是 6.908/ln2≈9.966 比特。</p>
+  <p>它在神经网络的哪里出现:交叉熵、对数似然(log-likelihood)、困惑度(perplexity,等于平均交叉熵取 exp)、数值稳定的 logsumexp、熵(entropy)和 KL 散度(KL divergence)。语言模型的损失常报“每 token 多少纳特”,再取 exp 就是“模型平均在多少个候选词里犹豫”:平均损失 2.303 纳特,困惑度就是 e<sup>2.303</sup>≈10,相当于在 10 个词里挑一个。</p>
+
+  <h3><span class="h3-n">A.5</span>softmax 与交叉熵</h3>
+  <p>分类网络的最后一层输出 logits,它们只是未归一化的实数分数,不是概率:可以是负数,加起来也不等于 1。softmax 把一组 logits 变成概率:</p>
+  <div class="math">p<sub>i</sub> = e<sup>z<sub>i</sub></sup> / Σ<sub>j</sub> e<sup>z<sub>j</sub></sup></div>
+  <p>先取指数,保证每个数都是正的;再除以总和,保证加起来等于 1。指数还有一个效果:大的 logit 会被放大。logits (2.0, 1.0, 0.1) 的指数是 7.389、2.718、1.105,和是 11.212,概率是 0.659、0.242、0.099。第一类比第二类只高 1.0,概率却高了 2.7 倍。</p>
+  <p>softmax 只关心差值。所有 logits 同时加 100,分子分母同乘 e<sup>100</sup>,概率完全不变。实际代码先减去最大值再取指数,就是为了避免 e<sup>1000</sup> 溢出成无穷大。同理,把所有 logits 同时乘以 2,分布会变尖;除以 2,分布会变平。前者就是温度(temperature)小于 1,后者是温度大于 1。</p>
+  <p>交叉熵(cross-entropy)衡量“模型给正确答案的概率有多低”:</p>
+  <div class="math">L = -ln p<sub>t</sub> = -Σ<sub>i</sub> y<sub>i</sub> ln p<sub>i</sub></div>
+  <p>t 是正确类别,y 是 one-hot 标签。模型给正确类 0.659,损失 0.417;给 0.099,损失 2.313。猜得越准,损失越接近 0;给正确答案 0 概率,损失趋向无穷大。所以交叉熵对“自信地答错”惩罚极重。</p>
+  <p>把 softmax 和交叉熵接在一起求导,结果会化简成非常干净的一行:∂L/∂z<sub>i</sub>=p<sub>i</sub>-y<sub>i</sub>(∂ 是偏导,只对一个变量求导)。正确类的那一项是 p<sub>t</sub>-1,其他类就是 p<sub>i</sub>。比如上面的例子,梯度是 (-0.341, 0.242, 0.099),三个数加起来正好是 0。这个梯度有界,不会因为指数爆炸;这也是分类网络通常用交叉熵而不是“softmax 后再套均方误差”的原因之一。</p>
+  <details class="fold"><summary>推导:softmax 加交叉熵为什么得到 p-y</summary><div class="fold-body">
+    <p>记 S=Σ<sub>j</sub>e<sup>z<sub>j</sub></sup>,则 p<sub>t</sub>=e<sup>z<sub>t</sub></sup>/S。对 z<sub>i</sub> 求导时,分子只在 i=t 时变化,分母永远变化:</p>
+    <p>∂p<sub>t</sub>/∂z<sub>i</sub> = p<sub>t</sub>(δ<sub>it</sub>-p<sub>i</sub>),其中 δ<sub>it</sub> 在 i=t 时为 1,否则为 0。</p>
+    <p>L=-ln p<sub>t</sub>,所以 ∂L/∂z<sub>i</sub>=-(1/p<sub>t</sub>)·∂p<sub>t</sub>/∂z<sub>i</sub>=p<sub>i</sub>-δ<sub>it</sub>。写成向量就是 p-y。整段推导只用了链式法则和商的求导。</p>
+  </div></details>
+  <p>它在神经网络的哪里出现:图像分类的输出层、语言模型预测下一个 token、注意力权重的归一化、对比学习里的温度 softmax。大模型采样时调的 temperature 就是这里的缩放系数:T 大,分布更平,输出更随机;T 小,分布更尖,更接近贪心。</p>
+
+  <div class="code-wrap"><div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div><pre class="code"><code>import torch
+import torch.nn.functional as F
+
+# 1) 点积:加权和
+x = torch.tensor([3.0, 4.0])
+w = torch.tensor([2.0, -1.0])
+z = w @ x + 0.5                 # 2.5
+
+# 2) softmax + 交叉熵(内部做 log-sum-exp,数值稳定)
+logits = torch.tensor([[2.0, 1.0, 0.1]])
+p = logits.softmax(dim=1)       # [0.659, 0.242, 0.099]
+loss = F.cross_entropy(logits, torch.tensor([0]))  # 0.417
+
+# 3) 链式法则:y = (3x + 1)^2,dy/dx = 6(3x + 1)
+x = torch.tensor(1.0, requires_grad=True)
+y = (3 * x + 1) ** 2
+y.backward()
+print(x.grad)                   # tensor(24.)
+</code></pre></div>
+
+  <div class="demo" id="d-ap-a-formula">
+    <div class="demo-bar"><span class="live">交互</span><span>公式探索器</span><span class="sp"></span><span class="tag">拖动输入</span></div>
+    <div class="demo-body">
+      <div class="seg" id="seg-ap-a-formula">
+        <button data-f="dot" aria-pressed="true">点积</button>
+        <button data-f="sig" aria-pressed="false">sigmoid</button>
+        <button data-f="soft" aria-pressed="false">softmax</button>
+        <button data-f="ce" aria-pressed="false">交叉熵</button>
+      </div>
+      <div class="math" id="m-ap-a-formula"><var>z</var> = <var>w</var> · <var>x</var> = 2x<sub>1</sub> - x<sub>2</sub></div>
+      <div class="canvas-wrap"><canvas id="cv-ap-a-formula" height="260"></canvas></div>
+      <div class="controls">
+        <div class="ctl" id="g-ap-a-a"><label for="s-ap-a-a"><span id="l-ap-a-a">x₁</span><output id="o-ap-a-a">2.00</output></label><input id="s-ap-a-a" type="range" min="-3" max="3" step="0.05" value="2" data-k="a"></div>
+        <div class="ctl" id="g-ap-a-b"><label for="s-ap-a-b"><span id="l-ap-a-b">x₂</span><output id="o-ap-a-b">1.00</output></label><input id="s-ap-a-b" type="range" min="-3" max="3" step="0.05" value="1" data-k="b"></div>
+        <div class="ctl" id="g-ap-a-c" hidden><label for="s-ap-a-c"><span id="l-ap-a-c">logit 3</span><output id="o-ap-a-c">0.10</output></label><input id="s-ap-a-c" type="range" min="-4" max="4" step="0.1" value="0.1" data-k="c"></div>
+        <div class="ctl" id="g-ap-a-true" hidden><label>正确类别</label><div class="seg" id="seg-ap-a-true"><button data-t="0" aria-pressed="true">类 1</button><button data-t="1" aria-pressed="false">类 2</button><button data-t="2" aria-pressed="false">类 3</button></div></div>
+      </div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>步骤</th><th>数值</th></tr></thead>
+          <tbody id="tb-ap-a-steps">
+            <tr><td>w = (2.00, -1.00)</td><td class="num">固定</td></tr>
+            <tr><td>x = (2.00, 1.00)</td><td class="num">输入</td></tr>
+            <tr><td>2 × 2.00</td><td class="num">4.000</td></tr>
+            <tr><td>(-1) × 1.00</td><td class="num">-1.000</td></tr>
+            <tr><td>z = 2x₁ - x₂</td><td class="num">3.000</td></tr>
+            <tr><td>|w|, |x|</td><td class="num">2.236, 2.236</td></tr>
+            <tr><td>cos θ, θ</td><td class="num">0.600, 53.1°</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="demo-hint">切换公式,拖动滑块。点积模式下画出两个向量与投影;softmax 和交叉熵模式下三条柱子的高度就是概率,交叉熵还会在右侧画出 -ln p 曲线。</div>
+  </div>
+
+  <div class="callout warn"><b>常见误解:softmax 的输出可以单独解读</b><p>看到 logits (2.0, 1.0, 0.1) 的 softmax 是 (0.659, 0.242, 0.099),很容易说“第一类的概率是 0.659”。这句话只在“这三个 logits 是一组候选”的前提下成立。换一组候选,同一个 logit 2.0 的 softmax 值会变:把第三类换成 10.0,第一类立刻从 0.659 掉到 0.00034。softmax 是相对的,不是把每个分数独立翻译成概率;logit 也不能跨样本直接比大小。</p></div>
+
+  <div class="quiz" data-id="q-ap-a-2">
+    <p class="q">把 logits (2.0, 1.0, 0.1) 的每一项都加上 100,变成 (102.0, 101.0, 100.1),softmax 的输出会怎样?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-ok data-why="对。分子和分母同时乘上 e^100,约掉后完全不变,仍是 0.659、0.242、0.099。softmax 只看 logits 之间的差值。">完全不变,仍是 0.659、0.242、0.099</button>
+      <button class="opt" data-k="B" data-why="错在把整体平移当成了整体放大。softmax 的每一项都在 0 到 1 之间且和为 1,不可能变成原来的 100 倍;分子分母同乘 e^100 后会约掉。">每一项都变成原来的 100 倍</button>
+      <button class="opt" data-k="C" data-why="错在以为平移会改变相对大小。三项之间的差仍然是 1.0 和 0.9,和原来一模一样;要让第一项压到 1,必须把第一项单独拉大,而不是三项一起加同一个数。">第一项变成 1,其余变成 0</button>
+      <button class="opt" data-k="D" data-why="错在忘了归一化。softmax 的分母就是所有指数的和,除完之后总和恒为 1;整体平移不改变分子与分母的比例,和不会变成 100。">总和会变成 100</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">A.6</span>期望与方差</h3>
+  <p>期望(expectation)是概率加权的平均。离散情形 E[X]=Σ p<sub>i</sub>x<sub>i</sub>。掷一个均匀骰子,期望是 (1+2+3+4+5+6)/6=3.5;它不是某个可能结果,而是长期平均。期望是线性的:E[aX+b]=aE[X]+b,E[X+Y]=E[X]+E[Y],后一条不要求 X、Y 独立。</p>
+  <p>方差(variance)衡量偏离平均的程度:Var(X)=E[(X-E[X])²]=E[X²]-E[X]²。标准差(standard deviation)是方差的平方根,和原数据同单位,读起来更直观。</p>
+  <p>算一个训练中的例子。60% 的样本损失 0.2,40% 的样本损失 1.2。期望损失 E=0.6×0.2+0.4×1.2=0.6。方差=0.6×(0.2-0.6)²+0.4×(1.2-0.6)²=0.096+0.144=0.24,标准差≈0.49。平均值 0.6 看起来不差,但标准差 0.49 说明有一批样本的损失是平均值的两倍,模型并没有对所有人都好。</p>
+  <p>它在神经网络的哪里出现:训练损失其实是数据分布上的期望,你只能用一个 mini-batch 估计它。若单个样本的损失方差是 σ²,batch 大小为 B 的均值方差是 σ²/B,标准差降到 σ/√B。B=64 时噪声标准差是单样本的 1/8。这就是为什么 batch 越大,梯度曲线越平滑,但每一步也越贵;也是为什么把 batch 从 64 加到 256 只能把噪声减半,收益递减。</p>
+  <p>初始化也用到方差。He 初始化让权重方差为 2/fan_in(fan_in 是输入维度,fan-in),Xavier 用 2/(fan_in+fan_out),目的是让每一层激活的方差大致保持不变;批归一化(BatchNorm)则直接把每个特征标准化到均值 0、方差 1。训练时看到的 loss 曲线抖动,一半来自采样,一半来自学习率。</p>
+
+  <h3><span class="h3-n">A.7</span>条件概率</h3>
+  <p>条件概率(conditional probability)问的是“已知 B 发生,A 发生的概率是多少”:</p>
+  <div class="math">P(A|B) = P(A∩B) / P(B),&nbsp;&nbsp;P(B)&gt;0</div>
+  <p>变形得到乘法法则 P(A∩B)=P(A|B)P(B),其中 ∩ 是交集(intersection),表示两件事同时发生。如果 A、B 独立,P(A|B)=P(A),联合概率就是两者相乘。贝叶斯公式(Bayes' theorem)只是把乘法法则反过来用:</p>
+  <div class="math">P(A|B) = P(B|A)P(A) / P(B)</div>
+  <p>算一个具体例子。1000 封邮件里 200 封是垃圾邮件;50 封含“免费”,其中 40 封是垃圾邮件。P(垃圾|免费)=40/50=0.8;P(免费|垃圾)=40/200=0.2;P(免费)=50/1000=0.05;P(垃圾)=0.2。贝叶斯给出 0.2×0.2/0.05=0.8,和直接数出来一致。注意 0.8 和 0.2 是两个方向的条件概率,不能混。</p>
+  <p>它在神经网络的哪里出现:分类器输出的就是 P(y|x);训练最大化条件似然,等价于最小化交叉熵。语言模型把整句概率分解成 P(x₁,…,x<sub>T</sub>)=∏ P(x<sub>t</sub>|x<sub>&lt;t</sub>),每一步都是“给定前文,下一个词的条件概率”。扩散模型、机器翻译、语音识别都在建模某种条件分布。评估时的精确率(precision)是 P(真实为正|预测为正),分母是模型预测为正的样本;召回率(recall)是 P(预测为正|真实为正),分母是真实为正的样本。两者分母不同,不能互相替代。</p>
+
+  <div class="quiz" data-id="q-ap-a-3">
+    <p class="q">1000 封邮件中 200 封是垃圾邮件,50 封含“免费”,其中 40 封是垃圾邮件。P(垃圾|免费) 是多少?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-ok data-why="对。条件概率的分母是“已知条件”的那一类,也就是 50 封含“免费”的邮件;分子是其中 40 封垃圾邮件,40/50=0.8。">0.8</button>
+      <button class="opt" data-k="B" data-why="错在把条件方向反了。0.2=40/200,分母是 200 封垃圾邮件,算出来的是 P(免费|垃圾),不是 P(垃圾|免费)。">0.2</button>
+      <button class="opt" data-k="C" data-why="错在用了联合概率。0.04=40/1000,是 P(垃圾∩免费),它没有除以 P(免费);条件概率还要再除以 0.05。">0.04</button>
+      <button class="opt" data-k="D" data-why="错在只算了分母。0.05=50/1000,是 P(免费) 本身;它没有用到“这 50 封里有 40 封是垃圾邮件”这个关键信息。">0.05</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">A.8</span>把十件工具接成一次训练</h3>
+  <p>一次前向传播:样本 x 与权重 W 做矩阵乘法,得到 logits z;softmax 把 z 变成概率 p;交叉熵取 -ln p<sub>t</sub> 得到损失。一次反向传播:链式法则从损失出发,依次乘上交叉熵、softmax、矩阵乘法的局部导数,得到每个权重的梯度。一次参数更新:沿负梯度走一小步,学习率 η 决定步长。整个训练循环就是这三步的重复。</p>
+  <p>这张表把十个工具放回它们的位置。读不懂某一章时,先回到对应的行,看看它到底在训练循环的哪一步起作用。</p>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>工具</th><th>公式</th><th>网络里的位置</th><th>一句话直觉</th></tr></thead>
+      <tbody>
+        <tr><td>点积</td><td class="num">w·x=Σw<sub>i</sub>x<sub>i</sub></td><td>神经元的加权和、注意力打分</td><td>衡量两个向量的对齐程度</td></tr>
+        <tr><td>矩阵乘法</td><td class="num">(m×n)(n×p)=m×p</td><td>全连接层、QK<sup>T</sup>、卷积</td><td>批量做点积</td></tr>
+        <tr><td>导数</td><td class="num">f'(x)=dy/dx</td><td>梯度、反向传播</td><td>切线斜率,告诉你往哪边调</td></tr>
+        <tr><td>链式法则</td><td class="num">dy/dx=(dy/du)(du/dx)</td><td>backprop</td><td>沿路把斜率乘起来</td></tr>
+        <tr><td>对数</td><td class="num">ln(ab)=ln a+ln b</td><td>交叉熵、困惑度</td><td>把乘法变成加法,防止下溢</td></tr>
+        <tr><td>softmax</td><td class="num">p<sub>i</sub>=e<sup>z<sub>i</sub></sup>/Σe<sup>z<sub>j</sub></sup></td><td>分类输出、注意力权重</td><td>把任意分数变成概率</td></tr>
+        <tr><td>交叉熵</td><td class="num">L=-ln p<sub>t</sub></td><td>分类、语言模型</td><td>正确类概率越低,罚得越重</td></tr>
+        <tr><td>期望</td><td class="num">E[X]=Σp<sub>i</sub>x<sub>i</sub></td><td>训练损失、mini-batch</td><td>概率加权的平均</td></tr>
+        <tr><td>方差</td><td class="num">Var(X)=E[(X-E[X])²]</td><td>batch 噪声、初始化</td><td>波动有多大</td></tr>
+        <tr><td>条件概率</td><td class="num">P(A|B)=P(A∩B)/P(B)</td><td>P(y|x)、下一个 token</td><td>已知条件下重新算比例</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>最后给一个可操作的检查顺序。手推一个网络的梯度时:先写出前向的每一步,标出形状;再写出损失;然后从损失往回,每经过一个节点就乘上它的局部导数;最后检查梯度形状和参数形状是否一致。形状对不上,几乎一定是某一步的矩阵转置或 batch 维丢了。数值对不上,先用有限差分做一次数值梯度检查:把某个参数加 1e-4,看损失变化多少,和解析梯度比。</p>
+
+  <div class="quiz" data-id="q-ap-a-4">
+    <p class="q">模型给正确类别的概率是 0.5,交叉熵损失约是多少?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-ok data-why="对。-ln 0.5=0.693。交叉熵不是概率本身,而是对概率取负对数;概率 0.5 对应的惩罚是 0.693 纳特。">0.693</button>
+      <button class="opt" data-k="B" data-why="错在把概率直接当成了损失。0.5 是模型给正确类的概率,不是 -ln p;交叉熵要再取一次负对数。">0.5</button>
+      <button class="opt" data-k="C" data-why="错在把“猜对一半”线性地映射成损失 1。交叉熵是非线性的:-ln 0.5≈0.693,不是 1;-ln 1=0,-ln 0.1=2.303。">1.0</button>
+      <button class="opt" data-k="D" data-why="错在用了以 10 为底的对数。-log₁₀0.5≈0.301,但本书和 PyTorch 的 cross_entropy 默认用自然对数 ln,结果是 0.693。">0.301</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <div class="ch-foot">
+    <span class="state" data-state></span>
+    <span class="sp"></span>
+    <a class="btn" href="#ch-ap-b">下一章 →</a>
+  </div>
+</section>
+
+<script>
+(function(){
+  'use strict';
+
+  function col(name, fallback){ return NN.token(name, fallback); }
+  function map(w, h, pad, xmin, xmax, ymin, ymax){
+    var iw = w - 2*pad, ih = h - 2*pad;
+    return {
+      x: function(v){ return pad + (v - xmin) / (xmax - xmin) * iw; },
+      y: function(v){ return h - pad - (v - ymin) / (ymax - ymin) * ih; },
+      xmin: xmin, xmax: xmax, ymin: ymin, ymax: ymax,
+      pad: pad, w: w, h: h
+    };
+  }
+  function arrow(ctx, x1, y1, x2, y2, color, lw){
+    ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = lw || 2;
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    var a = Math.atan2(y2 - y1, x2 - x1), L = 7;
+    ctx.beginPath();
+    ctx.moveTo(x2, y2);
+    ctx.lineTo(x2 - L * Math.cos(a - 0.45), y2 - L * Math.sin(a - 0.45));
+    ctx.lineTo(x2 - L * Math.cos(a + 0.45), y2 - L * Math.sin(a + 0.45));
+    ctx.closePath(); ctx.fill();
+  }
+  function dash(ctx, x1, y1, x2, y2, color, lw, pattern){
+    ctx.save();
+    ctx.setLineDash(pattern || [4, 4]);
+    ctx.strokeStyle = color; ctx.lineWidth = lw || 1;
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    ctx.restore();
+  }
+  function txt(ctx, s, x, y, color, align, font){
+    ctx.fillStyle = color;
+    ctx.textAlign = align || 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.font = font || '11px "Noto Sans SC", sans-serif';
+    ctx.fillText(s, x, y);
+    ctx.textAlign = 'left';
+  }
+  function grid(ctx, m, xstep, ystep){
+    ctx.strokeStyle = col('--line', '#cbd7e3'); ctx.lineWidth = 1;
+    var x, y;
+    for(x = Math.ceil(m.xmin / xstep) * xstep; x <= m.xmax + 1e-9; x += xstep){
+      ctx.beginPath(); ctx.moveTo(m.x(x), m.y(m.ymin)); ctx.lineTo(m.x(x), m.y(m.ymax)); ctx.stroke();
+    }
+    for(y = Math.ceil(m.ymin / ystep) * ystep; y <= m.ymax + 1e-9; y += ystep){
+      ctx.beginPath(); ctx.moveTo(m.x(m.xmin), m.y(y)); ctx.lineTo(m.x(m.xmax), m.y(y)); ctx.stroke();
+    }
+  }
+  function axes(ctx, m){
+    ctx.strokeStyle = col('--line2', '#a9bacb'); ctx.lineWidth = 1.2;
+    if(m.ymin < 0 && m.ymax > 0){
+      ctx.beginPath(); ctx.moveTo(m.x(m.xmin), m.y(0)); ctx.lineTo(m.x(m.xmax), m.y(0)); ctx.stroke();
+    }
+    if(m.xmin < 0 && m.xmax > 0){
+      ctx.beginPath(); ctx.moveTo(m.x(0), m.y(m.ymin)); ctx.lineTo(m.x(0), m.y(m.ymax)); ctx.stroke();
+    }
+  }
+
+  defineDemo('d-ap-a-formula', function(root){
+    var cv = root.querySelector('#cv-ap-a-formula');
+    var math = root.querySelector('#m-ap-a-formula');
+    var seg = root.querySelector('#seg-ap-a-formula');
+    var segT = root.querySelector('#seg-ap-a-true');
+    var gA = root.querySelector('#g-ap-a-a');
+    var gB = root.querySelector('#g-ap-a-b');
+    var gC = root.querySelector('#g-ap-a-c');
+    var gT = root.querySelector('#g-ap-a-true');
+    var A = root.querySelector('#s-ap-a-a');
+    var B = root.querySelector('#s-ap-a-b');
+    var C = root.querySelector('#s-ap-a-c');
+    var outA = root.querySelector('#o-ap-a-a');
+    var outB = root.querySelector('#o-ap-a-b');
+    var outC = root.querySelector('#o-ap-a-c');
+    var tb = root.querySelector('#tb-ap-a-steps');
+    var mode = 'dot';
+    var st = {
+      dot: {a: 2.0, b: 1.0},
+      sig: {a: 1.5},
+      soft: {a: 2.0, b: 1.0, c: 0.1},
+      ce: {a: 2.0, b: 1.0, c: 0.1, t: 0}
+    };
+
+    function setRange(inp, mn, mx, step){
+      inp.min = mn; inp.max = mx; inp.step = step;
+    }
+    function show(el, on){ el.hidden = !on; }
+    function label(sel, s){ root.querySelector(sel).textContent = s; }
+    function outVals(){
+      outA.textContent = (+A.value).toFixed(2);
+      outB.textContent = (+B.value).toFixed(2);
+      outC.textContent = (+C.value).toFixed(2);
+    }
+    function formula(){
+      if(mode === 'dot'){
+        math.innerHTML = '<var>z</var> = <var>w</var> · <var>x</var> = 2x<sub>1</sub> - x<sub>2</sub>';
+      } else if(mode === 'sig'){
+        math.innerHTML = 'σ(<var>z</var>) = 1 / (1 + e<sup>-<var>z</var></sup>)';
+      } else if(mode === 'soft'){
+        math.innerHTML = '<var>p</var><sub>i</sub> = e<sup><var>z</var><sub>i</sub></sup> / Σ<sub>j</sub> e<sup><var>z</var><sub>j</sub></sup>';
+      } else {
+        math.innerHTML = '<var>L</var> = -ln <var>p</var><sub>t</sub>';
+      }
+    }
+    function sync(){
+      var isDot = mode === 'dot';
+      var isSig = mode === 'sig';
+      show(gA, true);
+      show(gB, isDot || mode === 'soft' || mode === 'ce');
+      show(gC, mode === 'soft' || mode === 'ce');
+      show(gT, mode === 'ce');
+      if(isDot){
+        setRange(A, -3, 3, 0.05); setRange(B, -3, 3, 0.05);
+        A.value = st.dot.a; B.value = st.dot.b;
+        label('#l-ap-a-a', 'x₁'); label('#l-ap-a-b', 'x₂');
+      } else if(isSig){
+        setRange(A, -6, 6, 0.1);
+        A.value = st.sig.a;
+        label('#l-ap-a-a', 'z');
+      } else {
+        var s = mode === 'ce' ? st.ce : st.soft;
+        setRange(A, -4, 4, 0.1); setRange(B, -4, 4, 0.1); setRange(C, -4, 4, 0.1);
+        A.value = s.a; B.value = s.b; C.value = s.c;
+        label('#l-ap-a-a', 'logit 1'); label('#l-ap-a-b', 'logit 2'); label('#l-ap-a-c', 'logit 3');
+      }
+      var trueBtns = segT.querySelectorAll('button');
+      for(var i = 0; i < trueBtns.length; i++){
+        trueBtns[i].setAttribute('aria-pressed', (+trueBtns[i].dataset.t === st.ce.t) ? 'true' : 'false');
+      }
+      outVals();
+    }
+    function setSteps(rows){
+      var html = '';
+      for(var i = 0; i < rows.length; i++){
+        html += '<tr><td>' + rows[i][0] + '</td><td class="num">' + rows[i][1] + '</td></tr>';
+      }
+      tb.innerHTML = html;
+    }
+    function draw(){
+      var fit = NN.fitCanvas(cv, 260), ctx = fit.ctx, w = fit.w, h = fit.h;
+      ctx.clearRect(0, 0, w, h);
+      if(mode === 'dot') drawDot(ctx, w, h);
+      else if(mode === 'sig') drawSig(ctx, w, h);
+      else drawProb(ctx, w, h, mode === 'ce');
+    }
+    function drawDot(ctx, w, h){
+      var a = st.dot.a, b = st.dot.b;
+      var dot = 2*a - b, nw = Math.sqrt(5), nx = Math.hypot(a, b);
+      var cos = nx > 1e-9 ? Math.max(-1, Math.min(1, dot / (nw * nx))) : 0;
+      var theta = nx > 1e-9 ? Math.acos(cos) * 180 / Math.PI : 0;
+      var thetaS = nx > 1e-9 ? theta.toFixed(1) + '°' : '—';
+      var proj = dot / (nw * nw), px = 2 * proj, py = -proj;
+      var R = Math.max(3, Math.ceil(Math.max(Math.abs(a), Math.abs(b), Math.abs(px), Math.abs(py)) + 0.7));
+      var m = map(w, h, 34, -R, R, -R, R);
+      grid(ctx, m, 1, 1);
+      axes(ctx, m);
+      txt(ctx, '-' + R, m.x(-R) + 2, m.y(0) + 14, col('--muted'), 'left', '10px monospace');
+      txt(ctx, '0', m.x(0) - 4, m.y(0) + 14, col('--muted'), 'right', '10px monospace');
+      txt(ctx, String(R), m.x(R) - 2, m.y(0) + 14, col('--muted'), 'right', '10px monospace');
+      arrow(ctx, m.x(0), m.y(0), m.x(2), m.y(-1), col('--c1'), 2.2);
+      arrow(ctx, m.x(0), m.y(0), m.x(a), m.y(b), col('--c2'), 2.2);
+      if(nx > 1e-9){
+        dash(ctx, m.x(a), m.y(b), m.x(px), m.y(py), col('--muted'), 1.2, [4, 4]);
+        arrow(ctx, m.x(0), m.y(0), m.x(px), m.y(py), col('--c3'), 2);
+        txt(ctx, '投影', m.x(px) + 5, m.y(py) + 14, col('--c3'), 'left', '10px sans-serif');
+      }
+      txt(ctx, 'w', m.x(2) + 6, m.y(-1) - 6, col('--c1'), 'left', '12px sans-serif');
+      txt(ctx, 'x', m.x(a) + 6, m.y(b) - 6, col('--c2'), 'left', '12px sans-serif');
+      txt(ctx, 'w·x = ' + dot.toFixed(2), 10, 18, col('--ink2'), 'left', '12px monospace');
+      txt(ctx, '|w| = 2.236   |x| = ' + nx.toFixed(3) + '   cos = ' + cos.toFixed(3) + '   θ = ' + thetaS, 10, 34, col('--muted'), 'left', '11px monospace');
+      setSteps([
+        ['w = (2.00, -1.00)', '固定'],
+        ['x = (' + a.toFixed(2) + ', ' + b.toFixed(2) + ')', '输入'],
+        ['2 × ' + a.toFixed(2), (2*a).toFixed(3)],
+        ['(-1) × ' + b.toFixed(2), (-b).toFixed(3)],
+        ['z = 2x₁ - x₂', dot.toFixed(3)],
+        ['|w|, |x|', '2.236, ' + nx.toFixed(3)],
+        ['cos θ, θ', cos.toFixed(3) + ', ' + thetaS]
+      ]);
+    }
+    function drawSig(ctx, w, h){
+      var z = st.sig.a;
+      var s = 1 / (1 + Math.exp(-z));
+      var d = s * (1 - s);
+      var m = map(w, h, 34, -6, 6, -0.08, 1.08);
+      grid(ctx, m, 1, 0.25);
+      axes(ctx, m);
+      txt(ctx, '-6', m.x(-6) + 2, m.y(0) + 14, col('--muted'), 'left', '10px monospace');
+      txt(ctx, '0', m.x(0) - 4, m.y(0) + 14, col('--muted'), 'right', '10px monospace');
+      txt(ctx, '6', m.x(6) - 2, m.y(0) + 14, col('--muted'), 'right', '10px monospace');
+      txt(ctx, '1', m.x(0) - 8, m.y(1) - 4, col('--muted'), 'right', '10px monospace');
+      ctx.strokeStyle = col('--c1'); ctx.lineWidth = 2.2; ctx.beginPath();
+      for(var i = 0; i <= 240; i++){
+        var xx = -6 + 12 * i / 240;
+        var yy = 1 / (1 + Math.exp(-xx));
+        if(i === 0) ctx.moveTo(m.x(xx), m.y(yy));
+        else ctx.lineTo(m.x(xx), m.y(yy));
+      }
+      ctx.stroke();
+      ctx.save();
+      ctx.beginPath(); ctx.rect(m.pad, m.pad, w - 2*m.pad, h - 2*m.pad); ctx.clip();
+      var ty1 = s + d * (-6 - z), ty2 = s + d * (6 - z);
+      ctx.strokeStyle = col('--c2'); ctx.lineWidth = 2; ctx.beginPath();
+      ctx.moveTo(m.x(-6), m.y(ty1)); ctx.lineTo(m.x(6), m.y(ty2)); ctx.stroke();
+      ctx.restore();
+      ctx.fillStyle = col('--c2');
+      ctx.beginPath(); ctx.arc(m.x(z), m.y(s), 5, 0, Math.PI * 2); ctx.fill();
+      dash(ctx, m.x(z), m.y(s), m.x(z), m.y(0), col('--muted'), 1, [3, 3]);
+      dash(ctx, m.x(0), m.y(s), m.x(z), m.y(s), col('--muted'), 1, [3, 3]);
+      txt(ctx, 'σ(z) = ' + s.toFixed(4) + "   σ'(z) = " + d.toFixed(4), 10, 18, col('--ink2'), 'left', '12px monospace');
+      txt(ctx, 'z = ' + z.toFixed(2), 10, 34, col('--muted'), 'left', '11px monospace');
+      setSteps([
+        ['z', z.toFixed(3)],
+        ['e^-z', Math.exp(-z).toFixed(4)],
+        ['1 + e^-z', (1 + Math.exp(-z)).toFixed(4)],
+        ['σ(z)', s.toFixed(4)],
+        ["σ(z)(1-σ(z))", d.toFixed(4)]
+      ]);
+    }
+    function drawProb(ctx, w, h, isCE){
+      var z = isCE ? [st.ce.a, st.ce.b, st.ce.c] : [st.soft.a, st.soft.b, st.soft.c];
+      var mx = Math.max(z[0], z[1], z[2]);
+      var ex = z.map(function(v){ return Math.exp(v - mx); });
+      var S = ex[0] + ex[1] + ex[2];
+      var p = ex.map(function(v){ return v / S; });
+      var idx = 0;
+      for(var q = 1; q < 3; q++) if(p[q] > p[idx]) idx = q;
+      var t = st.ce.t;
+      var loss = isCE ? -Math.log(Math.max(p[t], 1e-12)) : 0;
+      var leftW = isCE ? Math.max(180, w * 0.55) : w;
+      var pad = 34, top = 38, bot = h - 34;
+      var plotW = leftW - pad - 8;
+      var gap = 10, bw = (plotW - 2*gap) / 3;
+      var colors = [col('--c1'), col('--c2'), col('--c3')];
+      var unif = bot - (bot - top) / 3;
+      dash(ctx, pad, unif, pad + plotW, unif, col('--line2'), 1, [4, 4]);
+      txt(ctx, '均匀 1/3', pad + plotW, unif - 5, col('--muted'), 'right', '10px sans-serif');
+      for(var i = 0; i < 3; i++){
+        var x = pad + i * (bw + gap);
+        var y = bot - p[i] * (bot - top);
+        var hgt = Math.max(1, bot - y);
+        ctx.fillStyle = colors[i];
+        ctx.globalAlpha = 0.9;
+        ctx.fillRect(x, y, bw, hgt);
+        ctx.globalAlpha = 1;
+        if(isCE && i === t){
+          ctx.strokeStyle = col('--accent'); ctx.lineWidth = 2.5;
+          ctx.strokeRect(x + 1, y + 1, bw - 2, Math.max(1, hgt - 2));
+        }
+        txt(ctx, '类 ' + (i + 1), x + bw/2, bot + 16, col('--muted'), 'center', '10px sans-serif');
+        txt(ctx, p[i].toFixed(3), x + bw/2, Math.max(top + 10, y - 5), col('--ink2'), 'center', '10px monospace');
+      }
+      if(isCE){
+        txt(ctx, 'p_t = ' + p[t].toFixed(4) + '   L = ' + loss.toFixed(3), 10, 18, col('--ink2'), 'left', '12px monospace');
+        var rx0 = leftW + 6, rx1 = w - 16, ry0 = top, ry1 = bot;
+        var ymax = Math.max(4.6, loss * 1.12);
+        function X(v){ return rx0 + v * (rx1 - rx0); }
+        function Y(v){ return ry1 - v / ymax * (ry1 - ry0); }
+        ctx.strokeStyle = col('--line'); ctx.lineWidth = 1;
+        ctx.strokeRect(rx0, ry0, rx1 - rx0, ry1 - ry0);
+        ctx.save();
+        ctx.beginPath(); ctx.rect(rx0, ry0, rx1 - rx0, ry1 - ry0); ctx.clip();
+        ctx.strokeStyle = col('--c4'); ctx.lineWidth = 2; ctx.beginPath();
+        for(var j = 0; j <= 140; j++){
+          var v = 0.01 + 0.99 * j / 140;
+          var yy = -Math.log(v);
+          if(j === 0) ctx.moveTo(X(v), Y(yy));
+          else ctx.lineTo(X(v), Y(yy));
+        }
+        ctx.stroke();
+        dash(ctx, X(p[t]), Y(loss), X(p[t]), ry1, col('--muted'), 1, [3, 3]);
+        dash(ctx, rx0, Y(loss), X(p[t]), Y(loss), col('--muted'), 1, [3, 3]);
+        ctx.fillStyle = col('--c2');
+        ctx.beginPath(); ctx.arc(X(p[t]), Y(loss), 4.5, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+        txt(ctx, '-ln p', rx0 + 4, ry0 - 6, col('--muted'), 'left', '10px sans-serif');
+        txt(ctx, 'p_t', rx1 - 2, ry1 + 14, col('--muted'), 'right', '10px monospace');
+        setSteps([
+          ['z', z[0].toFixed(2) + ' / ' + z[1].toFixed(2) + ' / ' + z[2].toFixed(2)],
+          ['exp(z - max)', ex[0].toFixed(4) + ' / ' + ex[1].toFixed(4) + ' / ' + ex[2].toFixed(4)],
+          ['S = Σ exp', S.toFixed(4)],
+          ['p = exp / S', p[0].toFixed(4) + ' / ' + p[1].toFixed(4) + ' / ' + p[2].toFixed(4)],
+          ['p_t(类 ' + (t + 1) + ')', p[t].toFixed(4)],
+          ['L = -ln p_t', loss.toFixed(4)]
+        ]);
+      } else {
+        txt(ctx, 'S = ' + S.toFixed(3) + '   argmax = 类 ' + (idx + 1), 10, 18, col('--ink2'), 'left', '12px monospace');
+        setSteps([
+          ['z', z[0].toFixed(2) + ' / ' + z[1].toFixed(2) + ' / ' + z[2].toFixed(2)],
+          ['z - max', (z[0]-mx).toFixed(2) + ' / ' + (z[1]-mx).toFixed(2) + ' / ' + (z[2]-mx).toFixed(2)],
+          ['exp(z - max)', ex[0].toFixed(4) + ' / ' + ex[1].toFixed(4) + ' / ' + ex[2].toFixed(4)],
+          ['S = Σ exp', S.toFixed(4)],
+          ['p = exp / S', p[0].toFixed(4) + ' / ' + p[1].toFixed(4) + ' / ' + p[2].toFixed(4)],
+          ['argmax', '类 ' + (idx + 1)]
+        ]);
+      }
+    }
+    function refresh(){ sync(); formula(); draw(); }
+
+    var fBtns = seg.querySelectorAll('button');
+    for(var i = 0; i < fBtns.length; i++){
+      fBtns[i].addEventListener('click', function(){
+        mode = this.dataset.f;
+        for(var k = 0; k < fBtns.length; k++){
+          fBtns[k].setAttribute('aria-pressed', fBtns[k] === this ? 'true' : 'false');
+        }
+        refresh();
+      });
+    }
+    var tBtns = segT.querySelectorAll('button');
+    for(var j = 0; j < tBtns.length; j++){
+      tBtns[j].addEventListener('click', function(){
+        st.ce.t = +this.dataset.t;
+        for(var k = 0; k < tBtns.length; k++){
+          tBtns[k].setAttribute('aria-pressed', tBtns[k] === this ? 'true' : 'false');
+        }
+        draw();
+      });
+    }
+    function onInput(inp, key){
+      inp.addEventListener('input', function(){
+        var s = mode === 'ce' ? st.ce : (mode === 'soft' ? st.soft : (mode === 'sig' ? st.sig : st.dot));
+        s[key] = +inp.value;
+        outVals();
+        draw();
+      });
+    }
+    onInput(A, 'a'); onInput(B, 'b'); onInput(C, 'c');
+    var theme = window.Theme || (window.NN && NN.Theme);
+    if(theme) theme.on(draw);
+    window.addEventListener('resize', draw);
+    setTimeout(refresh, 0);
+  });
+
+  defineDemo('d-ap-a-slope', function(root){
+    var cv = root.querySelector('#cv-ap-a-slope');
+    var seg = root.querySelector('#seg-ap-a-fn');
+    var math = root.querySelector('#m-ap-a-slope');
+    var slider = root.querySelector('#s-ap-a-x');
+    var out = root.querySelector('#o-ap-a-x');
+    var vx = root.querySelector('#v-ap-a-x');
+    var vf = root.querySelector('#v-ap-a-fx');
+    var vd = root.querySelector('#v-ap-a-dx');
+    var va = root.querySelector('#v-ap-a-ang');
+    var cur = 'sq';
+    var xs = {sq: 1.5, cube: 1.0, sig: 1.5, tanh: 1.0};
+
+    function sig(x){ return 1 / (1 + Math.exp(-x)); }
+    var F = {
+      sq: {
+        tex: 'x²', dtex: '2x',
+        f: function(x){ return x*x; },
+        d: function(x){ return 2*x; },
+        xmin: -2.5, xmax: 2.5, ymin: -0.5, ymax: 6.5, xstep: 0.5, ystep: 1
+      },
+      cube: {
+        tex: 'x³', dtex: '3x²',
+        f: function(x){ return x*x*x; },
+        d: function(x){ return 3*x*x; },
+        xmin: -2, xmax: 2, ymin: -8, ymax: 8, xstep: 0.5, ystep: 2
+      },
+      sig: {
+        tex: 'σ(x)', dtex: "σ(x)(1-σ(x))",
+        f: function(x){ return sig(x); },
+        d: function(x){ var s = sig(x); return s * (1 - s); },
+        xmin: -6, xmax: 6, ymin: -0.08, ymax: 1.08, xstep: 1, ystep: 0.25
+      },
+      tanh: {
+        tex: 'tanh x', dtex: '1 - tanh²x',
+        f: function(x){ return Math.tanh(x); },
+        d: function(x){ var t = Math.tanh(x); return 1 - t*t; },
+        xmin: -3, xmax: 3, ymin: -1.2, ymax: 1.2, xstep: 0.5, ystep: 0.5
+      }
+    };
+
+    function setPressed(){
+      var bs = seg.querySelectorAll('button');
+      for(var i = 0; i < bs.length; i++){
+        bs[i].setAttribute('aria-pressed', bs[i].dataset.f === cur ? 'true' : 'false');
+      }
+    }
+    function setSlider(){
+      var f = F[cur];
+      slider.min = f.xmin; slider.max = f.xmax; slider.step = 0.05;
+      slider.value = xs[cur];
+      out.textContent = (+slider.value).toFixed(2);
+      math.innerHTML = 'f(x) = ' + f.tex + ',&nbsp;&nbsp;f\'(x) = ' + f.dtex;
+    }
+    function draw(){
+      var f = F[cur], x0 = xs[cur], f0 = f.f(x0), d0 = f.d(x0);
+      var fit = NN.fitCanvas(cv, 280), ctx = fit.ctx, w = fit.w, h = fit.h;
+      ctx.clearRect(0, 0, w, h);
+      var m = map(w, h, 36, f.xmin, f.xmax, f.ymin, f.ymax);
+      grid(ctx, m, f.xstep, f.ystep);
+      axes(ctx, m);
+      txt(ctx, 'x', m.x(f.xmax) - 4, m.y(0) + 16, col('--muted'), 'right', '11px monospace');
+      txt(ctx, 'y', m.x(0) + 6, m.y(f.ymax) + 12, col('--muted'), 'left', '11px monospace');
+      ctx.strokeStyle = col('--c1'); ctx.lineWidth = 2.4; ctx.beginPath();
+      for(var i = 0; i <= 260; i++){
+        var xx = f.xmin + (f.xmax - f.xmin) * i / 260;
+        var yy = f.f(xx);
+        if(i === 0) ctx.moveTo(m.x(xx), m.y(yy));
+        else ctx.lineTo(m.x(xx), m.y(yy));
+      }
+      ctx.stroke();
+      ctx.save();
+      ctx.beginPath(); ctx.rect(m.pad, m.pad, w - 2*m.pad, h - 2*m.pad); ctx.clip();
+      var ty1 = f0 + d0 * (f.xmin - x0), ty2 = f0 + d0 * (f.xmax - x0);
+      ctx.strokeStyle = col('--c2'); ctx.lineWidth = 2; ctx.beginPath();
+      ctx.moveTo(m.x(f.xmin), m.y(ty1)); ctx.lineTo(m.x(f.xmax), m.y(ty2)); ctx.stroke();
+      ctx.restore();
+      var hh = Math.min(0.25, (f.xmax - f.xmin) / 20);
+      if(x0 + hh > f.xmax) hh = f.xmax - x0;
+      if(hh > 0.02){
+        var x1 = x0 + hh, y1 = f.f(x1);
+        dash(ctx, m.x(x0), m.y(f0), m.x(x1), m.y(f0), col('--c3'), 1.2, [4, 3]);
+        dash(ctx, m.x(x1), m.y(f0), m.x(x1), m.y(y1), col('--c3'), 1.2, [4, 3]);
+        dash(ctx, m.x(x0), m.y(f0), m.x(x1), m.y(y1), col('--c3'), 1.2, [2, 3]);
+        txt(ctx, 'Δx', (m.x(x0) + m.x(x1)) / 2, m.y(f0) + 14, col('--c3'), 'center', '10px monospace');
+        txt(ctx, 'Δy', m.x(x1) + 4, (m.y(f0) + m.y(y1)) / 2, col('--c3'), 'left', '10px monospace');
+      }
+      ctx.fillStyle = col('--c2');
+      ctx.beginPath(); ctx.arc(m.x(x0), m.y(f0), 5, 0, Math.PI * 2); ctx.fill();
+      dash(ctx, m.x(x0), m.y(f0), m.x(x0), m.y(0), col('--muted'), 1, [3, 3]);
+      txt(ctx, 'x = ' + x0.toFixed(2) + '   f(x) = ' + f0.toFixed(3) + "   f'(x) = " + d0.toFixed(3), 10, 18, col('--ink2'), 'left', '12px monospace');
+      vx.textContent = x0.toFixed(2);
+      vf.textContent = f0.toFixed(3);
+      vd.textContent = d0.toFixed(3);
+      va.textContent = (Math.atan(d0) * 180 / Math.PI).toFixed(1) + '°';
+    }
+    var bs = seg.querySelectorAll('button');
+    for(var i = 0; i < bs.length; i++){
+      bs[i].addEventListener('click', function(){
+        cur = this.dataset.f;
+        setPressed(); setSlider(); draw();
+      });
+    }
+    slider.addEventListener('input', function(){
+      xs[cur] = +slider.value;
+      out.textContent = (+slider.value).toFixed(2);
+      draw();
+    });
+    var theme = window.Theme || (window.NN && NN.Theme);
+    if(theme) theme.on(draw);
+    window.addEventListener('resize', draw);
+    setPressed(); setSlider(); setTimeout(draw, 0);
+  });
+
+  defineDemo('d-ap-a-descent', function(root){
+    var cv = root.querySelector('#cv-ap-a-descent');
+    var lrIn = root.querySelector('#s-ap-a-lr');
+    var lrOut = root.querySelector('#o-ap-a-lr');
+    var resetBtn = root.querySelector('#b-ap-a-reset');
+    var tag = root.querySelector('.demo-bar .tag');
+    var vStep = root.querySelector('#v-ap-a-step');
+    var vW = root.querySelector('#v-ap-a-w');
+    var vLoss = root.querySelector('#v-ap-a-loss');
+    var vGrad = root.querySelector('#v-ap-a-grad');
+    var w = -1, step = 0, lr = 0.12, trail = [], last = 0;
+
+    function loss(){ var d = w - 3; return d * d; }
+    function grad(){ return 2 * (w - 3); }
+    function advance(){
+      var g = grad();
+      w = w - lr * g;
+      step++;
+      trail.push(w);
+      if(trail.length > 60) trail.shift();
+    }
+    function update(){
+      vStep.textContent = String(step);
+      vW.textContent = w.toFixed(3);
+      vLoss.textContent = loss().toFixed(3);
+      vGrad.textContent = grad().toFixed(3);
+      tag.textContent = Math.abs(grad()) < 0.02 ? '已到谷底' : '自动运行';
+    }
+    function draw(){
+      var fit = NN.fitCanvas(cv, 260), ctx = fit.ctx, W = fit.w, H = fit.h;
+      ctx.clearRect(0, 0, W, H);
+      var m = map(W, H, 36, -1.5, 7.5, 0, 18);
+      grid(ctx, m, 1, 2);
+      axes(ctx, m);
+      txt(ctx, 'w', m.x(7.5) - 4, m.y(0) + 16, col('--muted'), 'right', '11px monospace');
+      txt(ctx, 'f(w)', m.x(0) + 6, m.y(18) + 12, col('--muted'), 'left', '11px monospace');
+      ctx.strokeStyle = col('--c1'); ctx.lineWidth = 2.4; ctx.beginPath();
+      for(var i = 0; i <= 240; i++){
+        var x = -1.5 + 9 * i / 240;
+        var y = (x - 3) * (x - 3);
+        if(i === 0) ctx.moveTo(m.x(x), m.y(y));
+        else ctx.lineTo(m.x(x), m.y(y));
+      }
+      ctx.stroke();
+      dash(ctx, m.x(3), m.y(0), m.x(3), m.y(18), col('--c3'), 1.2, [4, 4]);
+      txt(ctx, '目标 w = 3', m.x(3) + 4, m.y(16), col('--c3'), 'left', '10px sans-serif');
+      ctx.fillStyle = col('--c3');
+      for(var j = 0; j < trail.length; j++){
+        var tw = trail[j], tl = (tw - 3) * (tw - 3);
+        ctx.beginPath(); ctx.arc(m.x(tw), m.y(tl), 2.5, 0, Math.PI * 2); ctx.fill();
+      }
+      var g = grad();
+      ctx.save();
+      ctx.beginPath(); ctx.rect(m.pad, m.pad, W - 2*m.pad, H - 2*m.pad); ctx.clip();
+      var y1 = loss() + g * (-1.5 - w), y2 = loss() + g * (7.5 - w);
+      ctx.strokeStyle = col('--c2'); ctx.lineWidth = 2; ctx.beginPath();
+      ctx.moveTo(m.x(-1.5), m.y(y1)); ctx.lineTo(m.x(7.5), m.y(y2)); ctx.stroke();
+      ctx.restore();
+      ctx.fillStyle = col('--c2');
+      ctx.beginPath(); ctx.arc(m.x(w), m.y(loss()), 5.5, 0, Math.PI * 2); ctx.fill();
+      dash(ctx, m.x(w), m.y(loss()), m.x(w), m.y(0), col('--muted'), 1, [3, 3]);
+      txt(ctx, 'w = ' + w.toFixed(3) + '   f(w) = ' + loss().toFixed(3) + "   f'(w) = " + g.toFixed(3), 10, 18, col('--ink2'), 'left', '12px monospace');
+      txt(ctx, "w ← w - η·f'(w)", 10, 34, col('--muted'), 'left', '11px monospace');
+      update();
+    }
+    function reset(){
+      w = -1; step = 0; lr = +lrIn.value; trail = [w];
+      for(var i = 0; i < 7; i++) advance();
+      draw();
+    }
+    lrIn.addEventListener('input', function(){
+      lr = +lrIn.value;
+      lrOut.textContent = lr.toFixed(2);
+    });
+    resetBtn.addEventListener('click', reset);
+    var theme = window.Theme || (window.NN && NN.Theme);
+    if(theme) theme.on(draw);
+    window.addEventListener('resize', draw);
+    setTimeout(function(){
+      reset();
+      NN.createTicker(root, function(t){
+        if(t - last < 180) return;
+        last = t;
+        if(Math.abs(grad()) > 0.02){ advance(); draw(); }
+      }).start();
+    }, 0);
+  });
+})();
+</script>

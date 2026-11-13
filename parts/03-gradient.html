@@ -1,0 +1,880 @@
+<section class="ch" id="ch-03-gradient" data-num="03" data-title="梯度与学习">
+  <header class="ch-head">
+    <div class="ch-eyebrow"><span class="dot"></span>第 03 章 · 起步</div>
+    <h1 class="ch-title">梯度与学习</h1>
+    <p class="ch-sub">把"错得多离谱"压缩成一个数,再沿着让这个数变小的方向挪动参数(parameter)。</p>
+    <div class="ch-rule"></div>
+  </header>
+
+  <div class="prereq"><b>读前</b><span>第 02 章的 2.2 矩阵乘向量 <code>Wx</code>:知道一层是权重矩阵乘输入;导数、梯度本章从零讲。</span><b>可跳过</b><span>3.7 的两段代码(不运行也能跟上主线);3.6 的高维鞍点讨论可先略读。</span></div>
+
+  <p class="lead">第 02 章里,你已经能把一层层的加权求和写成矩阵乘法。但网络不会自己变好:它需要有人告诉它"现在错在哪里、该往哪边调"。这件事的全部数学只有三个词——损失(loss)、导数(derivative)、梯度(gradient)。这一章把它们拆开,再装回去。读完你会知道训练循环里那行 <code>w -= lr * grad</code> 到底在做什么,以及它为什么经常失败。</p>
+
+  <h3><span class="h3-n">3.1</span>损失函数:给"错"打一个分</h3>
+
+  <p>训练一个网络,第一步不是写代码,而是决定"什么叫好"。损失函数(loss function)就是这把尺子:它把模型在当前参数下犯的所有错误,压缩成一个标量(scalar)。标量就是一个数,不是一组数。这个数越小,模型在这批数据上越接近你的期望;训练的全部目标,就是让这个数变小。</p>
+
+  <p>以回归(regression)为例:你要预测房价,模型对第 <var>i</var> 个样本输出 <code>ŷ_i</code>,真实答案是 <code>y_i</code>。最常用的尺子是均方误差(mean squared error, MSE):</p>
+
+  <div class="math"><var>L</var> = (1/<var>n</var>) Σ (<var>ŷ</var><sub>i</sub> − <var>y</var><sub>i</sub>)²</div>
+
+  <p>用普通话念一遍:Σ 是求和(summation),误差(residual,即预测减真值)先平方,再把 <var>n</var> 个样本平均。平方做两件事——把正负误差都变成正数,并且让大误差受到更重的惩罚。假设三个样本的误差分别是 0.1、−0.2、0.9,平方后是 0.01、0.04、0.81,平均得到 <var>L</var> = 0.287。若把那个 0.9 的误差降到 0.3,<var>L</var> 立刻变成 0.047,下降 84%。这就是损失函数的价值:它逼模型优先修最离谱的那几个预测。</p>
+
+  <p>分类任务常用交叉熵(cross-entropy)。模型对真实类别给出概率 <var>p</var>,损失就是 −log <var>p</var>(负对数似然 negative log-likelihood:真实类别概率越小,罚得越重):猜对且自信(p = 0.99)时损失 0.010;猜对但犹豫(p = 0.5)时 0.693;把真实类别的概率压到 0.01 时,损失 4.605。三个数字直接对应"错得多离谱",模型没有任何模糊空间。</p>
+
+  <p>关键的一点:损失不是某一个参数的函数图像上随便一条线,而是<strong>全部参数</strong>的函数。一个有 13,002 个参数的迷你网络,它的损失地形(loss landscape)是一张 13,003 维空间里的曲面(13,002 个参数加 1 个损失值)。你没法画出来,但所有直觉都可以先在二维里练熟,再原样搬到高维。</p>
+
+  <div class="callout key"><b>先定尺子,再谈优化</b>损失函数定义了"好"的标准。换一个损失,就是换一个训练目标:MSE 关心平均偏差,交叉熵关心正确类别的概率,绝对值损失对离群点更宽容。网络不会"自己知道"你想要什么,它只会最小化你给它的那个数。</div>
+
+  <h3><span class="h3-n">3.2</span>导数:斜率就是方向</h3>
+
+  <p>先只看一个参数 <var>w</var>。固定其他一切,损失变成一条曲线 <var>L</var>(<var>w</var>)。导数(derivative)是这条曲线在某一点的切线(tangent line)斜率,记作 d<var>L</var>/d<var>w</var>。它的定义是一个极限(lim,即 limit:让 h 无限接近 0):</p>
+
+  <div class="math">d<var>L</var>/d<var>w</var> = lim<sub>h→0</sub> (<var>L</var>(<var>w</var>+h) − <var>L</var>(<var>w</var>)) / h</div>
+
+  <p>你不需要会算极限,只需要记住导数的两个用途。第一,<strong>符号</strong>告诉你方向:斜率为正,说明 <var>w</var> 增大时损失增大,那就该把 <var>w</var> 调小;斜率为负,说明 <var>w</var> 增大时损失减小,那就该把 <var>w</var> 调大。第二,<strong>绝对值</strong>告诉你敏感度:斜率 4 意味着 <var>w</var> 挪动 0.01,损失大约变化 0.04;斜率 0.02 意味着同样挪动只变化 0.0002。</p>
+
+  <p>拿一个能手算的例子:<var>L</var>(<var>w</var>) = (<var>w</var> − 3)²。它的导数是 2(<var>w</var> − 3)。在 <var>w</var> = 5 处,斜率是 4,损失是 4;想让损失变小,应该减小 <var>w</var>,比如走到 4.6,损失变成 2.56。反过来,在 <var>w</var> = 1 处斜率是 −4,应该增大 <var>w</var>。导数像山坡上的倾斜仪:它不告诉你山脚在哪,只告诉你脚下这一点的坡朝哪边、有多陡。</p>
+
+  <p>严格说,导数是"局部"信息。它保证的是:只要步子足够小,沿着负斜率方向走,损失一定下降。步子一大,这个保证就失效——3.4 节会看到它失效时的样子。</p>
+
+  <h3><span class="h3-n">3.3</span>梯度:把"方向"推广到多个参数</h3>
+
+  <p>网络有成千上万个参数,损失对每个参数都有一个偏导数(partial derivative,写作 ∂、读作偏导):固定其他参数,只对一个参数求导。把所有偏导数按参数顺序排成一个向量(vector),这个向量就叫梯度(gradient,写作 ∇、读作梯度):</p>
+
+  <div class="math">∇<var>L</var> = (∂<var>L</var>/∂<var>w</var><sub>1</sub>, ∂<var>L</var>/∂<var>w</var><sub>2</sub>, …, ∂<var>L</var>/∂<var>w</var><sub>n</sub>)</div>
+
+  <p>梯度有两个性质,值得背下来。第一,它指向损失<strong>上升最快</strong>的方向;第二,它的长度是那个方向上的上升速率。所以想让损失下降,就要往梯度的<strong>反方向</strong>走。这就是梯度下降(gradient descent):</p>
+
+  <div class="math"><var>w</var> ← <var>w</var> − η ∇<var>L</var>(<var>w</var>)</div>
+
+  <p>其中 η 是学习率(learning rate),下一节专讲。用普通话读:新参数 = 旧参数 减去 学习率 乘以 梯度。减号是全部秘密所在——梯度指上坡,减号让你下坡。</p>
+
+  <p>一个两参数的具体例子:<var>L</var>(<var>w</var><sub>1</sub>, <var>w</var><sub>2</sub>) = <var>w</var><sub>1</sub>² + 3<var>w</var><sub>2</sub>²。偏导数是 ∂<var>L</var>/∂<var>w</var><sub>1</sub> = 2<var>w</var><sub>1</sub>,∂<var>L</var>/∂<var>w</var><sub>2</sub> = 6<var>w</var><sub>2</sub>。在点 (1, 2) 处,梯度是 (2, 12)。这个向量指向右上方,因为往 <var>w</var><sub>2</sub> 方向走 1 个单位,损失涨得比 <var>w</var><sub>1</sub> 方向快 3 倍。取学习率 0.1,下一步是 (1 − 0.2, 2 − 1.2) = (0.8, 0.8),损失从 13 降到 0.64 + 1.92 = 2.56。一步就砍掉 80%。</p>
+
+  <div class="quiz" data-id="q-03-1">
+    <p class="q">损失 <var>L</var>(<var>w</var>) = (<var>w</var> − 3)²,当前 <var>w</var> = 5,导数为 4。下一步应该往哪边调?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="导数为正说明增大 w 会让损失变大,沿梯度方向走是上坡。正号不等于前进方向。">增大 <var>w</var>,沿着梯度的方向走</button>
+      <button class="opt" data-k="B" data-ok data-why="斜率 4 表示 w 增大时损失以约 4 倍速率上升,所以应取反方向:w 减小。走到 4.6 时损失从 4 降到 2.56。">减小 <var>w</var>,沿着负梯度方向走</button>
+      <button class="opt" data-k="C" data-why="梯度非零正是需要移动的信号。梯度为零只说明一阶斜率为零,后面会看到它甚至不一定是极小点。">保持 <var>w</var> 不动,等梯度自己变成零</button>
+      <button class="opt" data-k="D" data-why="这个函数的极小在 w = 3,不是 0。w = 0 处损失是 9,比 w = 5 处的 4 还大,直接设 0 反而更差。">把 <var>w</var> 直接设为 0,因为原点总是损失最小</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <div class="callout warn"><b>常见误解:梯度就是参数更新的方向</b>梯度指向损失<strong>上升最快</strong>的方向,不是下降方向。更新公式里的减号不是记号习惯,而是把方向翻过来的必要操作。如果你在代码里写成 <code>w += lr * grad</code>,损失会稳定地变大,训练会稳定地变差。看到 loss 曲线一路上扬,先检查这个符号。</div>
+
+  <h3><span class="h3-n">3.4</span>学习率:一步走多远</h3>
+
+  <p>学习率决定每次沿负梯度方向挪多远。它是训练中最重要的超参数(hyperparameter)之一,因为同一个梯度配上不同的步长,结果可以完全相反。</p>
+
+  <p>看一个二次函数 <var>L</var>(<var>w</var>) = (<var>w</var> − 3)²,梯度 2(<var>w</var> − 3)。在 <var>w</var> = 3.5 处梯度是 1。学习率 0.1,下一步 <var>w</var> = 3.4,损失从 0.25 变成 0.16;学习率 0.5,下一步 <var>w</var> = 3.0,一步到位;学习率 1.2,下一步 <var>w</var> = 2.3,越过谷底到了另一边,损失仍是 0.49;再下一步跳到 3.98,损失变成 0.96,比上一步更大——它在谷底两侧来回弹,而且越弹越远。学习率超过 2 除以曲线的曲率(curvature),也就是二阶导数(second derivative,斜率的变化率),梯度下降就会发散(diverge)。原因是每步把离谷底的距离乘以 1 − 学习率×曲率;这个因子要落在 −1 到 1 之间,学习率就必须小于 2/曲率。对这个函数,曲率恒为 2,临界值是 1。实际网络里曲率随位置变化,临界值不是一个固定数字,但"步子不能超过谷宽"这条直觉一直成立。</p>
+
+  <p>太小也不行。学习率 0.001 时,同样从 <var>w</var> = 3.5 出发,一步只挪 0.001;要把离谷底的距离从 0.5 缩小到 0.05,需要约 1150 步。工程上的常见做法是从 0.001 或 0.01 试起,观察头 100 步的损失曲线:下降太慢就乘 3,开始抖动就除以 3。现代优化器还会让学习率随训练衰减,或对每个参数单独调整步长。</p>
+
+  <div class="demo" id="d-03-descent">
+    <div class="demo-bar"><span class="live">交互</span><span>一维下山:球怎么滚</span><span class="sp"></span><span class="tag" id="t-03-status1">已预跑 5 步</span></div>
+    <div class="demo-body">
+      <div class="canvas-wrap"><canvas id="cv-03-descent" height="340"></canvas></div>
+      <div class="stat-row">
+        <div class="stat"><b id="v-03-x">0.97</b><span>位置 x</span></div>
+        <div class="stat"><b id="v-03-loss">0.696</b><span>当前损失 L</span></div>
+        <div class="stat"><b id="v-03-slope">0.07</b><span>切线斜率 dL/dx</span></div>
+        <div class="stat"><b id="v-03-step">5</b><span>已走步数</span></div>
+      </div>
+      <div class="controls">
+        <div class="ctl"><label for="s-03-lr">学习率 η <output id="o-03-lr">0.10</output></label>
+          <input id="s-03-lr" type="range" min="0.01" max="0.70" step="0.01" value="0.10"></div>
+        <button class="btn primary" id="b-03-step1">单步</button>
+        <button class="btn" id="b-03-auto1">自动</button>
+        <button class="btn" id="b-03-reset1">重置起点</button>
+      </div>
+    </div>
+    <div class="demo-hint">在曲线上按住并拖动可以换起点;调学习率后按"单步"或"自动"。把学习率调到 0.65 以上,看小球如何在两个谷之间来回弹;调到 0.70 会直接冲出画面。</div>
+  </div>
+
+  <p>演示里的曲线是 <var>L</var>(<var>x</var>) = 0.5<var>x</var>⁴ − <var>x</var>² + 0.2<var>x</var> + 1。它有两个谷:右边 x ≈ 0.95 处损失约 0.70,左边 x ≈ −1.05 处损失约 0.30,中间 x ≈ 0.10 处有一个约 1.01 的小山包。把起点放在 1.5 附近、学习率 0.10,球会滚进右边的谷并停住,尽管左边还有更低的谷。这正是下一节要讲的问题:它停在一个不是最低的谷里。</p>
+
+  <div class="quiz" data-id="q-03-2">
+    <p class="q">学习率从 0.1 调到 0.7 后,损失曲线开始剧烈抖动。最可能发生了什么?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="每步修正更大,不等于方向更对。步长超过谷宽时会直接跨过谷底,把原本该减小的损失变成增大的损失。">步子更大,所以一定会收敛得更快</button>
+      <button class="opt" data-k="B" data-ok data-why="每步都越过极小点,损失可能逐次放大。对二次函数,学习率超过 2 除以曲率时振幅会越来越大,最终溢出成 nan。">步子跨过了谷底,在两侧来回震荡,甚至发散</button>
+      <button class="opt" data-k="C" data-why="梯度只由当前位置决定,它不会因为学习率变大就自动缩小。学习率是我们手动乘上去的系数。">梯度会自动变小,补偿过大的学习率</button>
+      <button class="opt" data-k="D" data-why="MSE 和交叉熵都不会因为训练而变成负数。损失变成负数通常意味着实现错误,发散时更常见的是很大的正数或 nan。">损失会变成负数,说明模型在变好</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">3.5</span>链式法则:责任沿链条传递</h3>
+
+  <p>网络不是一层。输入 <var>x</var> 经过第一层得到 <var>h</var>,再经过第二层得到输出 <var>ŷ</var>,损失 <var>L</var> 又是 <var>ŷ</var> 的函数。你要知道 <var>L</var> 对第一层权重(weight)<var>w</var> 的导数,但 <var>L</var> 的表达式里根本没有 <var>w</var>,它藏在两层之外。链式法则(chain rule)解决这件事:把沿途每一小段的局部导数乘起来。</p>
+
+  <div class="math">d<var>L</var>/d<var>w</var> = (d<var>L</var>/d<var>ŷ</var>) · (d<var>ŷ</var>/d<var>h</var>) · (d<var>h</var>/d<var>w</var>)</div>
+
+  <p>直觉是"责任传递"。最终损失对输出的敏感度,乘上输出对中间表示的敏感度,再乘上中间表示对权重的敏感度,就是损失对这个权重的敏感度。每一层只负责算自己那一段的局部斜率,然后把上游传下来的责任继续往下乘。反向传播(backpropagation)不是一条新数学,它就是链式法则在计算图(computation graph)上的高效执行顺序:从损失出发,从后往前,每个节点把收到的梯度乘上自己的局部导数再转发。</p>
+
+  <p>用数字走一遍:<var>L</var> = (3<var>w</var> + 1)²,<var>w</var> = 0.5。令 <var>z</var> = 3<var>w</var> + 1 = 2.5。d<var>L</var>/d<var>z</var> = 2<var>z</var> = 5,d<var>z</var>/d<var>w</var> = 3,所以 d<var>L</var>/d<var>w</var> = 15。若 <var>w</var> 增加 0.01,损失大约增加 0.15(精确值是 0.1509)。把链条拉长到 10 层,每层局部导数都是 0.25,那么最前面那层的梯度要乘 0.25 十次,等于 9.5×10⁻⁷——信号在传递中几乎消失,这就是消失梯度(vanishing gradient)。反过来每层乘 4,十层后放大到 1,048,576 倍,就是爆炸梯度(exploding gradient)。深度网络训练不稳,一大半原因在这条乘法链上。</p>
+
+  <h3><span class="h3-n">3.6</span>局部最小、鞍点,以及"看起来走不动"</h3>
+
+  <p>梯度为零的点叫临界点(critical point)。它有三种可能。第一种是局部最小(local minimum):四周都比它高,梯度下降会停在这里。第二种是局部最大(local maximum):四周都比它低,梯度下降不会停在这里,除非初始化(initialization)恰好落在上面。第三种最容易被忽略:鞍点(saddle point)——在有些方向上它是谷底,在另一些方向上它是山顶。二维里鞍点像马鞍:沿马背方向下凹,沿马腹方向上翘。站在鞍点上,梯度是零,你会以为到了终点,但朝正确的方向迈一步,损失还能继续下降。整张地形上最低的那个点叫全局最小(global minimum),它可能只有一个,也可能有很多个等价的位置。</p>
+
+  <p>高维空间里,鞍点比局部最小多得多。一个 <var>n</var> 维临界点,要成为局部最小,所有 <var>n</var> 个方向都得向上弯;只要有任意一个方向向下弯,它就是鞍点。随机初始化下,这个概率随维度上升而迅速下降。所以"训练卡住"更常见的原因是鞍点、平坦区(plateau)或学习率不合适,而不是真的掉进了一个完美的局部最优。</p>
+
+  <p>实用对策有三类。加一点噪声或使用小批量(mini-batch)的随机梯度下降(stochastic gradient descent, SGD),噪声会把参数从鞍点附近推出去。加动量(momentum),让更新记住上一步的方向,冲过浅坑和小平台。或者换更好的初始化、调整学习率。理解这些方法的前提,是先把"梯度为零"和"已经最优"分开——它们不是一回事。</p>
+
+  <div class="demo" id="d-03-contour">
+    <div class="demo-bar"><span class="live">交互</span><span>二维等高线(contour line):往哪边下山</span><span class="sp"></span><span class="tag" id="t-03-status2">已预跑 26 步</span></div>
+    <div class="demo-body">
+      <div class="canvas-wrap"><canvas id="cv-03-contour" height="360"></canvas></div>
+      <div class="stat-row">
+        <div class="stat"><b id="v-03-pos">(0.98, 0.12)</b><span>当前位置</span></div>
+        <div class="stat"><b id="v-03-loss2">0.057</b><span>当前损失 L</span></div>
+        <div class="stat"><b id="v-03-grad">0.120</b><span>梯度模长 |∇L|</span></div>
+        <div class="stat"><b id="v-03-steps">26</b><span>已走步数</span></div>
+      </div>
+      <div class="controls">
+        <div class="seg" id="seg-03-mode">
+          <button data-mode="step" aria-pressed="false">只走一步</button>
+          <button data-mode="auto" aria-pressed="false">自动</button>
+          <button data-mode="pause" aria-pressed="true">暂停</button>
+        </div>
+        <div class="ctl"><label for="s-03-lr2">学习率 η <output id="o-03-lr2">0.08</output></label>
+          <input id="s-03-lr2" type="range" min="0.02" max="1.00" step="0.01" value="0.08"></div>
+        <button class="btn" id="b-03-reset2">回到预设</button>
+      </div>
+    </div>
+    <div class="demo-hint">在图上点击或拖动放置起点。橙色箭头是负梯度方向(下山),灰色箭头是梯度方向(上山);蓝色越浓损失越大。把学习率调到 0.8 以上,看轨迹如何跨过中间的山脊。</div>
+  </div>
+
+  <p>这张地形是 <var>L</var>(<var>x</var>, <var>y</var>) = 0.25(<var>x</var>² − 1)² + 0.5<var>y</var>² + 0.05<var>x</var>。左右各有一个谷,谷底分别在 <var>x</var> ≈ −1 和 <var>x</var> ≈ 1;中间 <var>x</var> ≈ 0 处是鞍点:沿 <var>x</var> 方向它向下凹,沿 <var>y</var> 方向它向上翘。把点放在鞍点附近,梯度接近 0,箭头缩成一个小圈;但轻轻一推,它会滑向其中一个谷。点击不同位置再单步,你会发现箭头总是垂直于等高线,并且指向颜色更浅的一侧。</p>
+
+  <div class="quiz" data-id="q-03-3">
+    <p class="q">训练停在一个梯度几乎为零的点上,能否断定已经找到最优解?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="零梯度只说明一阶导数为零。鞍点同样满足这个条件,而它在某些方向上仍然是下坡。">能,梯度为零就是极小值的定义</button>
+      <button class="opt" data-k="B" data-ok data-why="鞍点处梯度为零,但存在损失下降的方向。小批量噪声和动量正是用来把参数推出这种点的。">不能,它可能是鞍点,需要噪声或动量才能离开</button>
+      <button class="opt" data-k="C" data-why="鞍点在二维就能出现,这个演示中间的点就是一个,并不需要三维;高维里反而更常见,不是更罕见。">不能,因为鞍点只可能出现在三维以上的空间</button>
+      <button class="opt" data-k="D" data-why="鞍点不是极小点,更不是全局最小。全局最小是整张地形上损失最低的位置,鞍点的损失通常远高于它。">能,鞍点的损失一定是全局最小</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">3.7</span>在代码里跑一遍</h3>
+
+  <p>下面这段纯 numpy 代码复现了第一个演示的核心:手写损失、手写导数、循环更新。保存成 .py 就能运行。把 <code>lr</code> 从 0.10 改成 0.70,观察它从收敛变成发散。</p>
+
+  <div class="code-wrap"><div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div><pre class="code"><code>import numpy as np
+
+# 损失 L(x) = 0.5x^4 - x^2 + 0.2x + 1
+def loss(x):
+    return 0.5 * x**4 - x**2 + 0.2 * x + 1
+
+# 解析导数:2x^3 - 2x + 0.2
+def grad(x):
+    return 2 * x**3 - 2 * x + 0.2
+
+x = 1.55          # 起点
+lr = 0.10         # 学习率:试着改成 0.70
+for step in range(40):
+    g = grad(x)
+    x = x - lr * g
+    if step % 5 == 0:
+        print(f"step {step:2d}  x={x:+.4f}  L={loss(x):.4f}  dL/dx={g:+.4f}")</code></pre></div>
+
+  <p>输出会显示 <var>x</var> 从 1.55 快速靠近 0.95 附近的局部最小,损失从约 1.79 降到 0.70 以下,斜率随之趋近 0。把 <code>lr</code> 改成 0.70,你会看到 <var>x</var> 在两翼之间来回跳,数值迅速变大,几行后变成 nan 或天文数字。</p>
+
+  <p>真实框架不会让你手写导数。PyTorch 的自动微分(automatic differentiation)会记录前向计算图,调用一次 <code>backward()</code> 就按链式法则把梯度算好,存在每个参数的 <code>.grad</code> 里:</p>
+
+  <div class="code-wrap"><div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div><pre class="code"><code>import torch
+
+w = torch.tensor([0.5], requires_grad=True)
+x = torch.tensor([3.0])
+y = torch.tensor([10.0])
+
+for step in range(20):
+    y_hat = w * x                 # 前向:一个最简单的线性模型
+    loss = ((y_hat - y) ** 2).mean()
+    loss.backward()               # 反向:链式法则自动执行
+    with torch.no_grad():
+        w -= 0.01 * w.grad        # 梯度下降
+        w.grad.zero_()            # 清空累积的梯度
+    if step % 5 == 0:
+        print(step, w.item(), loss.item())</code></pre></div>
+
+  <p>这段代码的最优解是 <var>w</var> = 10/3 ≈ 3.333。梯度 6(3<var>w</var> − 10) 在 <var>w</var> = 0.5 时是 −51,学习率 0.01 给出每步 +0.51 的修正,大约 20 步收敛到 3.3 附近。<code>zero_()</code> 那一行常被初学者漏掉:PyTorch 的梯度是累加的,不清零就会把上一步的梯度也带进来。训练循环的骨架到这里就齐了——前向算损失,反向算梯度,沿着负梯度挪参数,重复。</p>
+
+  <div class="ch-foot">
+    <span class="state" data-state></span>
+    <span class="sp"></span>
+    <a class="btn" href="#ch-04-mlp">下一章 →</a>
+  </div>
+</section>
+
+<script>
+defineDemo('d-03-descent', function(root){
+  const cv = root.querySelector('#cv-03-descent');
+  const sLr = root.querySelector('#s-03-lr');
+  const oLr = root.querySelector('#o-03-lr');
+  const bStep = root.querySelector('#b-03-step1');
+  const bAuto = root.querySelector('#b-03-auto1');
+  const bReset = root.querySelector('#b-03-reset1');
+  const status = root.querySelector('#t-03-status1');
+  const vX = root.querySelector('#v-03-x');
+  const vL = root.querySelector('#v-03-loss');
+  const vS = root.querySelector('#v-03-slope');
+  const vN = root.querySelector('#v-03-step');
+
+  const X0 = -1.75, X1 = 1.75, Y0 = -0.2, Y1 = 2.9;
+  const PADL = 42, PADR = 14, PADT = 16, PADB = 30;
+  const DEF_START = 1.55;
+
+  function loss(x){ return 0.5*x*x*x*x - x*x + 0.2*x + 1; }
+  function dloss(x){ return 2*x*x*x - 2*x + 0.2; }
+
+  let lr = parseFloat(sLr.value);
+  let start = DEF_START;
+  let x = start;
+  let steps = 0;
+  let trail = [x];
+  let diverged = false;
+  let auto = false;
+  let lastT = 0, acc = 0;
+  let lastW = 560, lastH = 340;
+  let dragging = false;
+
+  function setStatus(t){ status.textContent = t; }
+
+  function updateStats(){
+    vX.textContent = isFinite(x) ? NN.fmt(x, 2) : '—';
+    vL.textContent = (isFinite(x) && Math.abs(x) < 1e4) ? NN.fmt(loss(x), 3) : '—';
+    vS.textContent = (isFinite(x) && Math.abs(x) < 1e4) ? NN.fmt(dloss(x), 2) : '—';
+    vN.textContent = String(steps);
+  }
+
+  function draw(){
+    const r = NN.fitCanvas(cv, 340);
+    const ctx = r.ctx, w = r.w, h = r.h;
+    lastW = w; lastH = h;
+    const iw = w - PADL - PADR, ih = h - PADT - PADB;
+    function px(v){ return PADL + (v - X0) / (X1 - X0) * iw; }
+    function py(v){ return PADT + (Y1 - v) / (Y1 - Y0) * ih; }
+    const ink = NN.token('--ink', '#0E1A28');
+    const muted = NN.token('--muted', '#68798C');
+    const line = NN.token('--line', '#CBD7E3');
+    const surface = NN.token('--surface', '#FFFFFF');
+    const accent = NN.token('--accent', '#1F4FD1');
+    const accent2 = NN.token('--accent2', '#C24A16');
+
+    ctx.clearRect(0, 0, w, h);
+    ctx.font = '11px "Noto Sans SC", sans-serif';
+    ctx.textBaseline = 'middle';
+
+    ctx.strokeStyle = line;
+    ctx.globalAlpha = 0.55;
+    ctx.lineWidth = 1;
+    for(let gv = 0; gv <= 2; gv += 0.5){
+      const gy = py(gv);
+      ctx.beginPath(); ctx.moveTo(PADL, gy); ctx.lineTo(PADL + iw, gy); ctx.stroke();
+    }
+    for(let gx = -1.5; gx <= 1.5; gx += 0.5){
+      const gxp = px(gx);
+      ctx.beginPath(); ctx.moveTo(gxp, PADT); ctx.lineTo(gxp, PADT + ih); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    ctx.strokeStyle = line;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(PADL, PADT, iw, ih);
+
+    ctx.save();
+    ctx.beginPath(); ctx.rect(PADL, PADT, iw, ih); ctx.clip();
+
+    ctx.beginPath();
+    const N = 260;
+    for(let i = 0; i <= N; i++){
+      const xx = X0 + (X1 - X0) * i / N;
+      const yy = loss(xx);
+      if(i === 0) ctx.moveTo(px(xx), py(yy)); else ctx.lineTo(px(xx), py(yy));
+    }
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 2;
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+
+    ctx.strokeStyle = accent2;
+    ctx.globalAlpha = 0.35;
+    ctx.lineWidth = 1.3;
+    ctx.beginPath();
+    for(let i = 0; i < trail.length; i++){
+      const xx = trail[i];
+      if(!isFinite(xx) || Math.abs(xx) > 12) continue;
+      const sx = px(xx), sy = py(loss(xx));
+      if(i === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    const onChart = isFinite(x) && x >= X0 && x <= X1;
+    if(onChart){
+      const bx = px(x), by = py(loss(x));
+      const m = dloss(x);
+
+      ctx.setLineDash([3, 4]);
+      ctx.strokeStyle = line;
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx, PADT + ih); ctx.stroke();
+      ctx.setLineDash([]);
+
+      if(isFinite(m)){
+        const dx = 0.55;
+        const xa = x - dx, xb = x + dx;
+        ctx.strokeStyle = accent2;
+        ctx.lineWidth = 1.6;
+        ctx.globalAlpha = 0.9;
+        ctx.beginPath();
+        ctx.moveTo(px(xa), py(loss(x) + m * (xa - x)));
+        ctx.lineTo(px(xb), py(loss(x) + m * (xb - x)));
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+
+      if(isFinite(m) && Math.abs(m) > 0.01){
+        const dir = m > 0 ? -1 : 1;
+        const len = Math.min(46, 14 + Math.abs(m) * 9);
+        const ay = by - 24;
+        ctx.lineCap = 'round';
+        ctx.strokeStyle = surface; ctx.lineWidth = 5;
+        ctx.beginPath(); ctx.moveTo(bx, ay); ctx.lineTo(bx + dir * len, ay); ctx.stroke();
+        ctx.strokeStyle = accent2; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(bx, ay); ctx.lineTo(bx + dir * len, ay); ctx.stroke();
+        const hx = bx + dir * len;
+        ctx.beginPath();
+        ctx.moveTo(hx, ay);
+        ctx.lineTo(hx - dir * 8, ay - 4.5);
+        ctx.lineTo(hx - dir * 8, ay + 4.5);
+        ctx.closePath();
+        ctx.fillStyle = accent2; ctx.fill();
+      }
+
+      ctx.beginPath(); ctx.arc(bx, by, 7, 0, Math.PI * 2);
+      ctx.fillStyle = accent; ctx.fill();
+      ctx.strokeStyle = surface; ctx.lineWidth = 2.5; ctx.stroke();
+    } else {
+      ctx.fillStyle = accent2;
+      ctx.font = '12px "Noto Sans SC", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('位置已冲出画面', PADL + iw / 2, PADT + 18);
+      ctx.textAlign = 'left';
+    }
+    ctx.restore();
+
+    ctx.fillStyle = muted;
+    ctx.font = '11px "Noto Sans SC", sans-serif';
+    ctx.textAlign = 'right';
+    for(let gv = 0; gv <= 2; gv += 1){
+      ctx.fillText(String(gv), PADL - 7, py(gv));
+    }
+    ctx.textAlign = 'center';
+    for(let gx = -1.5; gx <= 1.5; gx += 0.5){
+      ctx.fillText(NN.fmt(gx, 1), px(gx), PADT + ih + 12);
+    }
+    ctx.fillText('参数 x', PADL + iw / 2, h - 5);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = ink;
+    ctx.font = '12px "Noto Sans SC", sans-serif';
+    ctx.fillText('损失 L(x)', PADL, 10);
+  }
+
+  function doStep(quiet){
+    if(diverged) return;
+    const m = dloss(x);
+    if(!isFinite(m)){
+      diverged = true; auto = false; bAuto.textContent = '自动';
+      setStatus('数值溢出:已发散');
+      if(!quiet){ updateStats(); draw(); }
+      return;
+    }
+    x = x - lr * m;
+    steps++;
+    trail.push(x);
+    if(trail.length > 160) trail.shift();
+    if(!isFinite(x) || Math.abs(x) > 8){
+      diverged = true; auto = false; bAuto.textContent = '自动';
+      setStatus('已发散:位置冲出画面');
+    } else if(Math.abs(dloss(x)) < 0.004){
+      auto = false; bAuto.textContent = '自动';
+      setStatus('梯度接近 0:已停住');
+    }
+    if(!quiet){ updateStats(); draw(); }
+  }
+
+  function resetTo(v){
+    start = NN.clamp(v, X0 + 0.02, X1 - 0.02);
+    x = start; steps = 0; trail = [x]; diverged = false;
+    auto = false; bAuto.textContent = '自动';
+    updateStats(); draw();
+  }
+
+  function startAuto(){
+    if(diverged) resetTo(DEF_START);
+    auto = true;
+    bAuto.textContent = '暂停';
+    lastT = 0; acc = 0;
+    setStatus('自动下降中');
+  }
+
+  function pauseAuto(){
+    auto = false;
+    bAuto.textContent = '自动';
+    setStatus('已暂停');
+    draw();
+  }
+
+  function dataFromEvent(e){
+    const rect = cv.getBoundingClientRect();
+    const cx = (e.clientX - rect.left) / (rect.width || 1) * lastW;
+    const v = X0 + (cx - PADL) / (lastW - PADL - PADR) * (X1 - X0);
+    return NN.clamp(v, X0 + 0.02, X1 - 0.02);
+  }
+
+  function setStart(v){
+    auto = false; bAuto.textContent = '自动';
+    start = v; x = v; steps = 0; trail = [x]; diverged = false;
+    updateStats(); draw();
+    setStatus('拖动起点:松开后从新位置开始');
+  }
+
+  sLr.addEventListener('input', function(){
+    lr = parseFloat(sLr.value);
+    oLr.textContent = NN.fmt(lr, 2);
+  });
+
+  bStep.addEventListener('click', function(){
+    if(auto) pauseAuto();
+    if(diverged) resetTo(DEF_START);
+    setStatus('单步:沿负斜率挪一步');
+    doStep(false);
+  });
+
+  bAuto.addEventListener('click', function(){
+    if(auto) pauseAuto(); else startAuto();
+  });
+
+  bReset.addEventListener('click', function(){
+    resetTo(DEF_START);
+    setStatus('已回到默认起点');
+  });
+
+  cv.addEventListener('pointerdown', function(e){
+    e.preventDefault();
+    dragging = true;
+    try{ cv.setPointerCapture(e.pointerId); } catch(err){}
+    setStart(dataFromEvent(e));
+  });
+  cv.addEventListener('pointermove', function(e){
+    if(!dragging) return;
+    setStart(dataFromEvent(e));
+  });
+  cv.addEventListener('pointerup', function(){
+    if(dragging){
+      dragging = false;
+      setStatus('起点已更新:按单步或自动');
+    }
+  });
+  cv.addEventListener('pointercancel', function(){ dragging = false; });
+
+  const ticker = NN.createTicker(root, function(t){
+    if(!auto){
+      const pw = cv.parentElement ? cv.parentElement.clientWidth : 0;
+      if(pw && Math.abs(pw - lastW) > 2) draw();
+      return;
+    }
+    if(!lastT){ lastT = t; return; }
+    acc += t - lastT;
+    lastT = t;
+    if(acc >= 360){ acc = 0; doStep(false); }
+  });
+  ticker.start();
+
+  if(window.Theme && window.Theme.on) window.Theme.on(draw);
+  window.addEventListener('resize', draw);
+
+  for(let i = 0; i < 5; i++) doStep(true);
+  updateStats();
+  draw();
+  setStatus('已预跑 5 步');
+  oLr.textContent = NN.fmt(lr, 2);
+});
+
+defineDemo('d-03-contour', function(root){
+  const cv = root.querySelector('#cv-03-contour');
+  const sLr = root.querySelector('#s-03-lr2');
+  const oLr = root.querySelector('#o-03-lr2');
+  const status = root.querySelector('#t-03-status2');
+  const vPos = root.querySelector('#v-03-pos');
+  const vL = root.querySelector('#v-03-loss2');
+  const vG = root.querySelector('#v-03-grad');
+  const vN = root.querySelector('#v-03-steps');
+  const bReset = root.querySelector('#b-03-reset2');
+  const modeBtns = Array.prototype.slice.call(root.querySelectorAll('#seg-03-mode button'));
+
+  const X0 = -2.2, X1 = 2.2, Y0 = -1.35, Y1 = 1.35;
+  const PADL = 44, PADR = 14, PADT = 22, PADB = 32;
+  const PRESET_X = 1.55, PRESET_Y = 1.05, PRESET_STEPS = 26;
+
+  function f(x, y){
+    const a = x * x - 1;
+    return 0.25 * a * a + 0.5 * y * y + 0.05 * x;
+  }
+  function grad(x, y){
+    return [x * (x * x - 1) + 0.05, y];
+  }
+
+  let lr = parseFloat(sLr.value);
+  let x = PRESET_X, y = PRESET_Y;
+  let steps = 0;
+  let path = [[x, y]];
+  let diverged = false;
+  let auto = false;
+  let lastT = 0, acc = 0;
+  let lastW = 560, lastH = 360;
+  let bg = null, bgW = 0, bgH = 0;
+  let dragging = false;
+
+  function setStatus(t){ status.textContent = t; }
+
+  function gradMag(){
+    const g = grad(x, y);
+    return Math.sqrt(g[0] * g[0] + g[1] * g[1]);
+  }
+
+  function updateStats(){
+    vPos.textContent = '(' + NN.fmt(x, 2) + ', ' + NN.fmt(y, 2) + ')';
+    vL.textContent = isFinite(f(x, y)) ? NN.fmt(f(x, y), 3) : '—';
+    vG.textContent = isFinite(gradMag()) ? NN.fmt(gradMag(), 3) : '—';
+    vN.textContent = String(steps);
+  }
+
+  function buildBG(w, h, iw, ih){
+    const off = document.createElement('canvas');
+    const sc = 2;
+    off.width = Math.round(w * sc);
+    off.height = Math.round(h * sc);
+    const o = off.getContext('2d');
+    o.scale(sc, sc);
+
+    const nx = 120, ny = 80;
+    const vals = [];
+    let vmin = Infinity, vmax = -Infinity;
+    for(let i = 0; i <= nx; i++){
+      vals[i] = [];
+      for(let j = 0; j <= ny; j++){
+        const gx = X0 + (X1 - X0) * i / nx;
+        const gy = Y1 - (Y1 - Y0) * j / ny;
+        const v = f(gx, gy);
+        vals[i][j] = v;
+        if(v < vmin) vmin = v;
+        if(v > vmax) vmax = v;
+      }
+    }
+    const top = Math.min(vmax, vmin + 2.6);
+    const base = NN.hexToRgb(NN.token('--surface2', '#F3F7FB'));
+    const acc = NN.hexToRgb(NN.token('--accent', '#1F4FD1'));
+    const lc = NN.hexToRgb(NN.token('--line2', '#A9BACB'));
+    const cellW = iw / nx, cellH = ih / ny;
+    const bands = [];
+
+    for(let i = 0; i < nx; i++){
+      bands[i] = [];
+      for(let j = 0; j < ny; j++){
+        const v = (vals[i][j] + vals[i + 1][j] + vals[i][j + 1] + vals[i + 1][j + 1]) / 4;
+        let t = (v - vmin) / (top - vmin);
+        t = NN.clamp(t, 0, 1);
+        t = Math.pow(t, 0.62);
+        const b = Math.round(t * 9) / 9;
+        bands[i][j] = b;
+        const rr = Math.round(base[0] + (acc[0] - base[0]) * b * 0.72);
+        const gg = Math.round(base[1] + (acc[1] - base[1]) * b * 0.72);
+        const bb = Math.round(base[2] + (acc[2] - base[2]) * b * 0.72);
+        o.fillStyle = 'rgb(' + rr + ',' + gg + ',' + bb + ')';
+        o.fillRect(PADL + i * cellW - 0.3, PADT + j * cellH - 0.3, cellW + 0.6, cellH + 0.6);
+      }
+    }
+
+    o.strokeStyle = 'rgba(' + lc[0] + ',' + lc[1] + ',' + lc[2] + ',0.4)';
+    o.lineWidth = 0.7;
+    for(let i = 0; i < nx; i++){
+      for(let j = 0; j < ny; j++){
+        if(i < nx - 1 && bands[i][j] !== bands[i + 1][j]){
+          const ex = PADL + (i + 1) * cellW;
+          o.beginPath(); o.moveTo(ex, PADT + j * cellH); o.lineTo(ex, PADT + (j + 1) * cellH); o.stroke();
+        }
+        if(j < ny - 1 && bands[i][j] !== bands[i][j + 1]){
+          const ey = PADT + (j + 1) * cellH;
+          o.beginPath(); o.moveTo(PADL + i * cellW, ey); o.lineTo(PADL + (i + 1) * cellW, ey); o.stroke();
+        }
+      }
+    }
+    bg = off; bgW = w; bgH = h;
+  }
+
+  function arrow(ctx, x1, y1, x2, y2, color, width, head, surface){
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = surface; ctx.lineWidth = width + 2.6;
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    ctx.strokeStyle = color; ctx.lineWidth = width;
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    if(head){
+      const a = Math.atan2(y2 - y1, x2 - x1);
+      const hs = 8 + width * 1.6;
+      ctx.beginPath();
+      ctx.moveTo(x2, y2);
+      ctx.lineTo(x2 - hs * Math.cos(a - 0.4), y2 - hs * Math.sin(a - 0.4));
+      ctx.lineTo(x2 - hs * Math.cos(a + 0.4), y2 - hs * Math.sin(a + 0.4));
+      ctx.closePath();
+      ctx.fillStyle = color; ctx.fill();
+      ctx.strokeStyle = surface; ctx.lineWidth = 1; ctx.stroke();
+    }
+  }
+
+  function label(ctx, text, lx, ly, color, surface){
+    ctx.font = '10px "Noto Sans SC", sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.lineWidth = 3; ctx.strokeStyle = surface;
+    ctx.strokeText(text, lx, ly - 12);
+    ctx.fillStyle = color;
+    ctx.fillText(text, lx, ly - 12);
+    ctx.textAlign = 'left';
+  }
+
+  function draw(){
+    const r = NN.fitCanvas(cv, 360);
+    const ctx = r.ctx, w = r.w, h = r.h;
+    lastW = w; lastH = h;
+    const iw = w - PADL - PADR, ih = h - PADT - PADB;
+    function px(v){ return PADL + (v - X0) / (X1 - X0) * iw; }
+    function py(v){ return PADT + (Y1 - v) / (Y1 - Y0) * ih; }
+    const muted = NN.token('--muted', '#68798C');
+    const line = NN.token('--line', '#CBD7E3');
+    const surface = NN.token('--surface', '#FFFFFF');
+    const accent2 = NN.token('--accent2', '#C24A16');
+
+    if(!bg || bgW !== w || bgH !== h) buildBG(w, h, iw, ih);
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(bg, 0, 0, w, h);
+
+    ctx.strokeStyle = line; ctx.lineWidth = 1;
+    ctx.strokeRect(PADL, PADT, iw, ih);
+
+    ctx.fillStyle = muted;
+    ctx.font = '11px "Noto Sans SC", sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    ctx.fillText('蓝色越浓,损失越大', PADL + 6, PADT - 10);
+    ctx.textAlign = 'center';
+    for(let gx = -2; gx <= 2; gx += 1){
+      ctx.fillText(String(gx), px(gx), PADT + ih + 13);
+    }
+    ctx.textAlign = 'right';
+    for(let gy = -1; gy <= 1; gy += 1){
+      ctx.fillText(String(gy), PADL - 7, py(gy));
+    }
+    ctx.textAlign = 'center';
+    ctx.fillText('x', PADL + iw / 2, h - 5);
+    ctx.textAlign = 'left';
+    ctx.fillText('y', 8, PADT + 10);
+    ctx.textAlign = 'center';
+
+    ctx.save();
+    ctx.beginPath(); ctx.rect(PADL, PADT, iw, ih); ctx.clip();
+
+    if(path.length > 1){
+      ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+      ctx.strokeStyle = surface; ctx.lineWidth = 4;
+      ctx.beginPath();
+      for(let i = 0; i < path.length; i++){
+        const sx = px(path[i][0]), sy = py(path[i][1]);
+        if(i === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+      }
+      ctx.stroke();
+      ctx.strokeStyle = accent2; ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      for(let i = 0; i < path.length; i++){
+        const sx = px(path[i][0]), sy = py(path[i][1]);
+        if(i === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+      }
+      ctx.stroke();
+    }
+
+    if(path.length){
+      const sx = px(path[0][0]), sy = py(path[0][1]);
+      ctx.strokeStyle = surface; ctx.lineWidth = 2;
+      ctx.strokeRect(sx - 3.5, sy - 3.5, 7, 7);
+    }
+
+    if(x >= X0 && x <= X1 && y >= Y0 && y <= Y1){
+      const cx = px(x), cy = py(y);
+      const g = grad(x, y);
+      const m = Math.sqrt(g[0] * g[0] + g[1] * g[1]);
+      const sxScale = iw / (X1 - X0), syScale = ih / (Y1 - Y0);
+      if(m > 0.02){
+        let ux = g[0] * sxScale, uy = -g[1] * syScale;
+        const ul = Math.sqrt(ux * ux + uy * uy) || 1;
+        ux /= ul; uy /= ul;
+        const len = NN.clamp(20 + 16 * Math.log1p(m), 26, 92);
+        arrow(ctx, cx, cy, cx + ux * len * 0.62, cy + uy * len * 0.62, muted, 1.6, true, surface);
+        arrow(ctx, cx, cy, cx - ux * len, cy - uy * len, accent2, 2.6, true, surface);
+        label(ctx, '−∇L 下山', cx - ux * len, cy - uy * len, accent2, surface);
+      } else {
+        ctx.beginPath(); ctx.arc(cx, cy, 9, 0, Math.PI * 2);
+        ctx.strokeStyle = muted; ctx.lineWidth = 1.5; ctx.stroke();
+        label(ctx, '∇L ≈ 0', cx, cy, muted, surface);
+      }
+      ctx.beginPath(); ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+      ctx.fillStyle = accent2; ctx.fill();
+      ctx.strokeStyle = surface; ctx.lineWidth = 2; ctx.stroke();
+    } else {
+      ctx.fillStyle = accent2;
+      ctx.font = '12px "Noto Sans SC", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('位置已离开画面', PADL + iw / 2, PADT + 20);
+      ctx.textAlign = 'left';
+    }
+    ctx.restore();
+  }
+
+  function advance(){
+    const g = grad(x, y);
+    x = x - lr * g[0];
+    y = y - lr * g[1];
+    steps++;
+    path.push([x, y]);
+    if(path.length > 400) path.shift();
+  }
+
+  function setMode(name){
+    for(let i = 0; i < modeBtns.length; i++){
+      modeBtns[i].setAttribute('aria-pressed', String(modeBtns[i].dataset.mode === name));
+    }
+  }
+
+  function step(){
+    if(diverged) return;
+    const m = gradMag();
+    if(m < 0.003){
+      auto = false; setMode('pause');
+      setStatus('梯度接近 0:已停住');
+      updateStats(); draw();
+      return;
+    }
+    advance();
+    if(!isFinite(x) || !isFinite(y) || x < X0 - 1.5 || x > X1 + 1.5 || y < Y0 - 1.5 || y > Y1 + 1.5){
+      diverged = true; auto = false; setMode('pause');
+      setStatus('已出界:学习率过大');
+    }
+    updateStats(); draw();
+  }
+
+  function resetPreset(){
+    auto = false; setMode('pause');
+    x = PRESET_X; y = PRESET_Y; steps = 0; path = [[x, y]]; diverged = false;
+    for(let i = 0; i < PRESET_STEPS; i++) advance();
+    updateStats(); draw();
+    setStatus('已回到预设:预跑 26 步');
+  }
+
+  function startAuto(){
+    if(diverged) resetPreset();
+    auto = true; lastT = 0; acc = 0;
+    setStatus('自动下降中');
+  }
+
+  function pointFromEvent(e){
+    const rect = cv.getBoundingClientRect();
+    const cx = (e.clientX - rect.left) / (rect.width || 1) * lastW;
+    const cy = (e.clientY - rect.top) / (rect.height || 1) * lastH;
+    const vx = X0 + (cx - PADL) / (lastW - PADL - PADR) * (X1 - X0);
+    const vy = Y1 - (cy - PADT) / (lastH - PADT - PADB) * (Y1 - Y0);
+    return [NN.clamp(vx, X0, X1), NN.clamp(vy, Y0, Y1)];
+  }
+
+  function moveTo(v){
+    auto = false; setMode('pause');
+    x = v[0]; y = v[1];
+    steps = 0; path = [[x, y]]; diverged = false;
+    updateStats(); draw();
+    setStatus('已放置起点:选"只走一步"或"自动"');
+  }
+
+  for(let i = 0; i < modeBtns.length; i++){
+    (function(b){
+      b.addEventListener('click', function(){
+        const m = b.dataset.mode;
+        if(m === 'step'){
+          auto = false;
+          setMode('step');
+          setStatus('单步:沿负梯度走一步');
+          step();
+        } else if(m === 'auto'){
+          if(diverged) resetPreset();
+          setMode('auto');
+          startAuto();
+        } else {
+          auto = false;
+          setMode('pause');
+          setStatus('已暂停');
+        }
+      });
+    })(modeBtns[i]);
+  }
+
+  sLr.addEventListener('input', function(){
+    lr = parseFloat(sLr.value);
+    oLr.textContent = NN.fmt(lr, 2);
+  });
+
+  bReset.addEventListener('click', function(){
+    resetPreset();
+  });
+
+  cv.addEventListener('pointerdown', function(e){
+    e.preventDefault();
+    dragging = true;
+    try{ cv.setPointerCapture(e.pointerId); } catch(err){}
+    moveTo(pointFromEvent(e));
+  });
+  cv.addEventListener('pointermove', function(e){
+    if(!dragging) return;
+    moveTo(pointFromEvent(e));
+  });
+  cv.addEventListener('pointerup', function(){ dragging = false; });
+  cv.addEventListener('pointercancel', function(){ dragging = false; });
+
+  const ticker = NN.createTicker(root, function(t){
+    if(!auto){
+      const pw = cv.parentElement ? cv.parentElement.clientWidth : 0;
+      if(pw && Math.abs(pw - lastW) > 2) draw();
+      return;
+    }
+    if(!lastT){ lastT = t; return; }
+    acc += t - lastT;
+    lastT = t;
+    if(acc >= 120){ acc = 0; step(); }
+  });
+  ticker.start();
+
+  if(window.Theme && window.Theme.on){
+    window.Theme.on(function(){ bg = null; draw(); });
+  }
+  window.addEventListener('resize', draw);
+
+  for(let i = 0; i < PRESET_STEPS; i++) advance();
+  updateStats();
+  draw();
+  setStatus('已预跑 26 步');
+  oLr.textContent = NN.fmt(lr, 2);
+});
+</script>

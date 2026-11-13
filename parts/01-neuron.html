@@ -1,0 +1,1043 @@
+<section class="ch" id="ch-01-neuron" data-num="01" data-title="一个神经元">
+  <header class="ch-head">
+    <div class="ch-eyebrow"><span class="dot"></span>第 01 章 · 起步</div>
+    <h1 class="ch-title">一个神经元</h1>
+    <p class="ch-sub">从生物细胞到一行加权和:一条直线能做什么,又在哪里撞墙。</p>
+    <div class="ch-rule"></div>
+  </header>
+
+  <div class="prereq"><b>读前</b><span>第 00 章的「函数、参数」与符号速查页 §.1 的 <code>Σ</code>、<code>∂</code>;导数只需知道「变化率」,1.4、1.6 用到,正式讲法在第 03 章。</span><b>可跳过</b><span>1.3 的几何解释、1.6 的 numpy 代码块与「点开看梯度」折叠,跳过不影响主线。</span></div>
+
+  <p class="lead">神经网络听起来像一门关于大脑的学问,但它的基本零件简单到可以在纸上算完:一串输入、一组权重、一个偏置、一次加权求和,再套一个非线性函数。本章只做一件事——把这个零件彻底拆开,让你能亲手调它、看它出错,并且知道它为什么必然出错。后面所有网络,都是把这个零件复制上万份、接成多层。</p>
+
+  <h3><span class="h3-n">1.1</span>从生物神经元到数学模型</h3>
+  <p>生物神经元(biological neuron)有树突(dendrite)、细胞体(soma)、轴突(axon)和突触(synapse)。树突接收来自其他神经元的信号,细胞体把这些信号汇总,轴突把结果传出去,突触是连接处的接口。人脑约有 860 亿个神经元,常用估计约有 100 万亿条突触连接,平均每个神经元接收上千条。信号表现为电脉冲(spike),强弱由放电频率编码:输入越强,放电越密。</p>
+  <p>这一套机制里,真正可计算的部分只有三件事:多路输入、按连接强度加权求和、超过阈值才输出。1943 年 McCulloch 与 Pitts 把这三件事抽出来,得到第一个人工神经元(artificial neuron)模型。它当然不是大脑的复制品,但足够作为一块可训练的计算积木。</p>
+
+  <h3><span class="h3-n">1.2</span>加权和:z = w·x + b</h3>
+  <p>把输入写成向量(vector)<var>x</var> = (x₁, x₂, …, xₙ),每个输入配一个权重(weight) <var>w</var>ᵢ。权重表示这条输入有多重要,正权重鼓励神经元激活,负权重抑制它。把所有输入乘上各自权重再相加,得到加权和(weighted sum):</p>
+  <div class="math"><var>z</var> = <var>w</var> · <var>x</var> + <var>b</var> = <var>w</var><sub>1</sub><var>x</var><sub>1</sub> + <var>w</var><sub>2</sub><var>x</var><sub>2</sub> + … + <var>w</var><sub>n</sub><var>x</var><sub>n</sub> + <var>b</var></div>
+  <p>再加一个非线性函数 <var>f</var>,就得到神经元的输出 <var>a</var> = <var>f</var>(<var>z</var>)。公式里每一项都在做同一件事:某个输入乘以它对结果的影响,然后累加。</p>
+  <p>看一个具体例子。用两个特征判断一套房子是否值得看:面积(单位:百平方米)与到地铁的步行时间(单位:10 分钟)。取权重 w₁ = 1.8、w₂ = −0.9、偏置 b = −0.4。对一套 120 平方米、步行 5 分钟的房子,x = (1.2, 0.5),于是 z = 1.8×1.2 − 0.9×0.5 − 0.4 = 1.31。套上 S 形函数(sigmoid,把任意数压到 0—1)后 a ≈ 0.788,表示模型给出 78.8% 的倾向。</p>
+  <p>偏置(bias)<var>b</var> 是不依赖任何输入的常数。它最重要、也最容易被初学者忽略的作用,是把决策边界(decision boundary)整体推开。取 w = (1, 1),当 b = 0 时,分界线是 x₁ + x₂ = 0;当 b = +2 时,分界线变成 x₁ + x₂ = −2,整条线朝负方向平移了两个单位,于是原来落在边界另一侧的一大片点被划进正类。你可以把 b 想成一只从背后推桌子的手:它不改变桌子的朝向,只改变桌子离原点的距离。</p>
+  <p>工程上常把偏置吸收进权重:给神经元加一个恒为 1 的输入 x₀ = 1,令 w₀ = b,则 z = Σ(西格玛,求和) wᵢxᵢ 从 i = 0 开始。这样代码里只剩一次向量点积,少一个特判。双输入神经元因此有 3 个参数(parameter):2 个权重加 1 个偏置。</p>
+
+  <div class="demo" id="d-01-neuron">
+    <div class="demo-bar"><span class="live">交互</span><span>双输入神经元:拖动权重与偏置</span><span class="sp"></span><span class="tag">点击平面放置探针</span></div>
+    <div class="demo-body">
+      <div class="canvas-wrap"><canvas id="cv-01-neuron" height="320"></canvas></div>
+      <div class="stat-row">
+        <div class="stat"><b id="o-01-z">1.64</b><span>z = w·x + b</span></div>
+        <div class="stat"><b id="o-01-a">0.837</b><span>a = f(z)</span></div>
+        <div class="stat"><b id="o-01-cls">1 类</b><span>探针分类</span></div>
+      </div>
+      <div class="controls">
+        <div class="ctl"><label for="s-01-w1">权重 w₁ <output id="o-01-w1">1.40</output></label><input id="s-01-w1" type="range" min="-2" max="2" step="0.05" value="1.4"></div>
+        <div class="ctl"><label for="s-01-w2">权重 w₂ <output id="o-01-w2">0.70</output></label><input id="s-01-w2" type="range" min="-2" max="2" step="0.05" value="0.7"></div>
+        <div class="ctl"><label for="s-01-b">偏置 b <output id="o-01-b">0.10</output></label><input id="s-01-b" type="range" min="-3" max="3" step="0.05" value="0.1"></div>
+        <div class="ctl">
+          <label>激活函数</label>
+          <div class="seg" id="seg-01-act" role="group" aria-label="激活函数">
+            <button type="button" data-act="step" aria-pressed="false">阶跃</button>
+            <button type="button" data-act="sigmoid" aria-pressed="true">sigmoid</button>
+            <button type="button" data-act="tanh" aria-pressed="false">tanh</button>
+            <button type="button" data-act="relu" aria-pressed="false">ReLU</button>
+          </div>
+        </div>
+        <button class="btn primary" id="b-01-fit" type="button">拟合这两团点</button>
+        <button class="btn" id="b-01-reset" type="button">复位</button>
+      </div>
+    </div>
+    <div class="demo-hint">三个滑块直接改变 z = w₁x₁ + w₂x₂ + b;点击平面任意位置移动探针,下方三个数字随之更新。切换激活函数只会改变 a 的尺度,蓝线不会动——因为分类只看 z 的符号。点"拟合"会用逻辑回归分步调整三个参数。</div>
+  </div>
+
+  <div class="quiz" data-id="q-01-1">
+    <p class="q">把双输入神经元的偏置 b 从 0 调到 +2,其他参数不变,决策边界会怎样?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-ok data-why="对。边界由 w·x + b = 0 决定,b 进入常数项,整条线平行移动;正方向的偏置让更多点满足 w·x + b > 0,被划进正类。">整条线平行移动,更多点被划进正类</button>
+      <button class="opt" data-k="B" data-why="线的倾斜方向由法向量 (w₁, w₂) 决定,只有改变 w₁ 与 w₂ 的比值才会让线旋转。b 是标量,不改变法向量。">线绕原点旋转,斜率改变</button>
+      <button class="opt" data-k="C" data-why="对固定的 x,a 确实会变大,但分类边界是 z = 0 的位置,b 就在 z 里面,所以边界也跟着平移,不是原地不动。">线的位置不变,只是所有 a 变大</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">1.3</span>点积在几何上做了什么</h3>
+  <p>公式 w·x 叫点积(dot product)。它有两种读法。代数的读法是逐项相乘再相加;几何的读法是:</p>
+  <div class="math"><var>w</var> · <var>x</var> = |<var>w</var>| |<var>x</var>| cos <var>θ</var></div>
+  <p>其中 θ 是两个向量之间的夹角。这个式子说明:点积等于 x 在 w 方向上的投影(projection)长度,再乘以 w 的长度。取 w = (3, 4),x = (4, 3):两者长度都是 5,点积是 3×4 + 4×3 = 24,于是 cos θ = 24/25 = 0.96,夹角约 16.3°;x 在 w 上的投影长度是 24/5 = 4.8。</p>
+  <p>把权重看成神经元"偏好的方向",z 就是在问:输入沿着这个方向走了多远。夹角为 0,点积最大,神经元最兴奋;夹角 90°,点积为 0,在 b = 0 时输入恰好落在分界线上;夹角 180°,点积为负,神经元被抑制。高维空间里没有肉眼可见的夹角,但 cos θ 仍然是相似度(similarity):两个向量方向越一致,点积越大。后面的注意力机制用点积给词与词打分,用的就是这条几何直觉。</p>
+
+  <div class="demo" id="d-01-dot">
+    <div class="demo-bar"><span class="live">交互</span><span>点积 = 投影 × 长度</span><span class="sp"></span><span class="tag">拖动三个滑块</span></div>
+    <div class="demo-body">
+      <div class="canvas-wrap"><canvas id="cv-01-dot" height="320"></canvas></div>
+      <div class="stat-row">
+        <div class="stat"><b id="o-01-dot-z">4.36</b><span>点积 w·x</span></div>
+        <div class="stat"><b id="o-01-dot-cos">0.71</b><span>cos θ</span></div>
+        <div class="stat"><b id="o-01-dot-p">1.56</b><span>x 在 w 上的投影</span></div>
+        <div class="stat"><b id="o-01-dot-x">2.20</b><span>|x|</span></div>
+      </div>
+      <div class="controls">
+        <div class="ctl"><label for="s-01-wang">w 的方向 <output id="o-01-wang">30</output>°</label><input id="s-01-wang" type="range" min="0" max="360" step="1" value="30"></div>
+        <div class="ctl"><label for="s-01-xang">x 的方向 <output id="o-01-xang">75</output>°</label><input id="s-01-xang" type="range" min="0" max="360" step="1" value="75"></div>
+        <div class="ctl"><label for="s-01-xlen">x 的长度 <output id="o-01-xlen">2.2</output></label><input id="s-01-xlen" type="range" min="0.6" max="3" step="0.1" value="2.2"></div>
+      </div>
+    </div>
+    <div class="demo-hint">黄色粗线是 x 在 w 方向上的投影。把两个方向拖到重合,点积达到最大;拖到相差 90°,投影收缩为 0,点积也为 0,这时输入正好落在神经元的决策边界上;超过 90°,点积变负。</div>
+  </div>
+
+  <h3><span class="h3-n">1.4</span>激活函数:把 z 压进可用的范围</h3>
+  <p>只有 z 时,神经元输出可以任意大,也不方便解释。激活函数(activation function)把 z 映射到一个固定范围,并引入非线性。单个神经元里它不改变分界线的位置,但在多层网络里,正是它让网络能表达曲线——这一点在第 04 章会看到。</p>
+  <p><strong>阶跃函数(step function)</strong>最简单:z ≥ 0 输出 1,否则输出 0。它的导数(derivative,函数的变化率)几乎处处为 0,在 z = 0 处不可导;导数的完整讲法在第 03 章。这意味着它无法用梯度下降(gradient descent,梯度指函数增长最快的方向)训练:参数动一点点,输出不变,梯度给不出该往哪走。</p>
+  <p><strong>sigmoid</strong> 把任意实数压到 (0, 1):</p>
+  <div class="math"><var>a</var> = σ(<var>z</var>) = 1 / (1 + e<sup>−z</sup>) &nbsp;&nbsp; <var>a</var>′ = σ(<var>z</var>)(1 − σ(<var>z</var>))</div>
+  <p>导数在 z = 0 处取最大值 0.25,向两侧迅速衰减。具体数字:z = 2 时 a = 0.881,导数 0.105;z = 4 时 a = 0.982,导数 0.0177;z = 6 时导数只剩 0.0025。两端这种"怎么推都不动"的状态叫饱和(saturation)。</p>
+  <p><strong>tanh</strong> 把输出压到 (−1, 1),且以 0 为中心,导数 1 − tanh²(z),在 0 处最大为 1。tanh(2) = 0.964,导数 0.0707;tanh(4) 的导数只有 0.00134,同样会饱和。零中心让下一层收到的输入均值为 0,通常比 sigmoid 更好训练。</p>
+  <p><strong>修正线性单元(ReLU)</strong>是 max(0, z):正区导数恒为 1,负区恒为 0,计算只要一次比较。它没有上界饱和,是隐藏层的默认选择。代价是死亡 ReLU(dying ReLU):如果某个神经元的 z 对所有样本都为负,它的梯度恒为 0,权重再也收不到更新,这个单元就永久失效。学习率(learning rate)过大时,几十个 ReLU 可能同时死亡。</p>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>函数</th><th>输出范围</th><th>导数</th><th>z = 0 处导数</th><th>主要问题</th></tr></thead>
+      <tbody>
+        <tr><td>阶跃 step</td><td class="num">0 或 1</td><td>几乎处处 0</td><td class="num">不可导</td><td>无法用梯度训练</td></tr>
+        <tr><td>sigmoid</td><td class="num">(0, 1)</td><td>a(1 − a)</td><td class="num">0.25</td><td>两端饱和</td></tr>
+        <tr><td>tanh</td><td class="num">(−1, 1)</td><td>1 − a²</td><td class="num">1</td><td>两端饱和</td></tr>
+        <tr><td>ReLU</td><td class="num">[0, +∞)</td><td>z &gt; 0 时为 1,否则 0</td><td class="num">通常取 0</td><td>负区死亡</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout tip"><b>怎么选</b>隐藏层先用 ReLU;要输出 0—1 的概率用 sigmoid;需要 −1—1 且零中心的中间量用 tanh。不要用阶跃函数做梯度训练,它的导数几乎处处为 0。</div>
+
+  <div class="demo" id="d-01-act">
+    <div class="demo-bar"><span class="live">交互</span><span>激活函数探索器</span><span class="sp"></span><span class="tag">切换函数 / 拖动 z</span></div>
+    <div class="demo-body">
+      <div class="canvas-wrap"><canvas id="cv-01-act" height="340"></canvas></div>
+      <div class="stat-row">
+        <div class="stat"><b id="o-01-act-a">0.881</b><span>激活值 a = f(z)</span></div>
+        <div class="stat"><b id="o-01-act-d">0.1050</b><span>导数 f′(z)</span></div>
+        <div class="stat"><b id="o-01-act-g">42.0%</b><span>梯度还剩</span></div>
+      </div>
+      <div class="controls">
+        <div class="ctl">
+          <label>激活函数</label>
+          <div class="seg" id="seg-01-fn" role="group" aria-label="激活函数">
+            <button type="button" data-fn="step" aria-pressed="false">阶跃</button>
+            <button type="button" data-fn="sigmoid" aria-pressed="true">sigmoid</button>
+            <button type="button" data-fn="tanh" aria-pressed="false">tanh</button>
+            <button type="button" data-fn="relu" aria-pressed="false">ReLU</button>
+          </div>
+        </div>
+        <div class="ctl"><label for="s-01-z">输入 z <output id="o-01-zv">2.0</output></label><input id="s-01-z" type="range" min="-6" max="6" step="0.1" value="2"></div>
+      </div>
+    </div>
+    <div class="demo-hint">上半图是 a = f(z),下半图是它的导数。黄色阴影是饱和区(ReLU 阴影是死亡区)。"梯度还剩"用当前导数除以该函数的最大导数:它告诉你反向传播经过这个单元时,信号还能保留多少。</div>
+  </div>
+
+  <div class="quiz" data-id="q-01-2">
+    <p class="q">sigmoid 神经元在 z = 4 处做反向传播,梯度大约只剩最大值的多少?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="只有 z = 0 附近才接近最大值 0.25。z = 4 时 σ′(4) = 0.0177,已经是最大值的 7%,不是 100%。">100%,几乎不衰减</button>
+      <button class="opt" data-k="B" data-why="50% 大约对应 |z| ≈ 1.8,不是 4。z = 4 已经深入饱和区,b 和 w 的更新会慢一个数量级。">约 50%</button>
+      <button class="opt" data-k="C" data-ok data-why="对。σ′(4) = σ(4)(1 − σ(4)) = 0.982 × 0.018 = 0.0177,而最大值是 0.25,0.0177 / 0.25 ≈ 7.1%。">约 7%</button>
+      <button class="opt" data-k="D" data-why="它非常小,但不是 0。真正恒为 0、完全断掉梯度的是阶跃函数;0.0177 仍然能训练,只是很慢。">0%,梯度完全消失</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <div class="quiz" data-id="q-01-3">
+    <p class="q">训练中一个 ReLU 神经元对所有输入的输出都是 0,最可能的原因是什么?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="学习率小只会让训练变慢,不会把输出固定为 0。输出恒 0 说明进入了 ReLU 的负区,而且出不来。">学习率设得太小</button>
+      <button class="opt" data-k="B" data-ok data-why="对。这个单元对全部样本都有 z &lt; 0,ReLU 在负区导数恒为 0,权重收不到任何梯度,于是它永久停在负区。这就是死亡 ReLU。">它的 z 在所有样本上都小于 0,导数恒为 0,权重不再更新</button>
+      <button class="opt" data-k="C" data-why="输入没归一化会放大这个问题,但恒 0 的直接机制仍然是负区导数为 0。归一化本身不会保证神经元复活。">输入没有做归一化</button>
+      <button class="opt" data-k="D" data-why="ReLU 的输出范围是 0 到正无穷,不是 0—1。输出恒 0 不是正常状态,而是这个单元已经失效。">ReLU 的输出范围就是 0—1,0 属于正常值</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">1.5</span>一个神经元的天花板</h3>
+  <p>做二分类时,你只关心 a 落在阈值(threshold)的哪一侧:sigmoid 用 0.5,tanh 用 0,ReLU 用 0。这几个激活函数都是单调不减的,所以条件等价于 <var>w</var> · <var>x</var> + <var>b</var> &gt; 0。换句话说,分类边界就是方程 <var>w</var> · <var>x</var> + <var>b</var> = 0 的解集:二维里是一条直线,三维里是一个平面,高维里是一个超平面(hyperplane)。如果两类点能被这样一条直线完全分开,它们就叫线性可分(linearly separable)。</p>
+  <p>因此,一个神经元就是一个线性分类器(linear classifier)。它能做的全部事情,是用一条直线把平面切成两半。它无法表示"两个特征相同时输出 0、不同时输出 1"这种关系。后者叫异或(XOR):四个点 (0,0)、(1,1) 属于 0 类,(1,0)、(0,1) 属于 1 类。两类点的凸包(convex hull,包住所有点的最小凸形)在中心相交,任何一条直线都只能正确分对其中的 3 个点,准确率上限是 75%。</p>
+  <p>这不是训练不够,也不是学习率没调好,而是模型容量(model capacity)不够。参数数量可以算清楚:n 维输入接 1 个神经元有 n + 1 个参数;一层 m 个神经元接收 n 维输入,有 m(n + 1) 个参数。例如 784 维的图像接 128 个神经元,共有 128 × 785 = 100,480 个参数——即使有 10 万个参数,每个神经元的边界仍然是一个超平面。</p>
+
+  <div class="callout warn"><b>常见误解</b>给单个神经元换上 sigmoid 或 ReLU,它就能拟合 XOR、画出弯曲的边界。激活函数只改变 a 的数值尺度,不改变 z = 0 这条线的位置;分类只用到 z 的符号,所以边界仍是一条直线。要让边界弯折,至少需要两层:隐藏层用多条直线切出多个半平面,输出层再把这些半平面组合起来。这是第 04 章的主题。</div>
+
+  <div class="demo" id="d-01-xor">
+    <div class="demo-bar"><span class="live">交互</span><span>单神经元的极限:两团点 vs 异或</span><span class="sp"></span><span class="tag">切换数据 / 重新训练</span></div>
+    <div class="demo-body">
+      <div class="canvas-wrap"><canvas id="cv-01-xor" height="320"></canvas></div>
+      <div class="stat-row">
+        <div class="stat"><b id="o-01-xor-acc">训练中</b><span>训练集准确率</span></div>
+        <div class="stat"><b id="o-01-xor-step">0</b><span>已训练步数</span></div>
+        <div class="stat"><b>3</b><span>参数量(2 权重 + 1 偏置)</span></div>
+      </div>
+      <div class="controls">
+        <div class="ctl">
+          <label>数据</label>
+          <div class="seg" id="seg-01-data" role="group" aria-label="数据分布">
+            <button type="button" data-mode="blobs" aria-pressed="true">两团点</button>
+            <button type="button" data-mode="xor" aria-pressed="false">异或</button>
+          </div>
+        </div>
+        <button class="btn primary" id="b-01-retrain" type="button">重新训练</button>
+      </div>
+    </div>
+    <div class="demo-hint">页面打开时会自动训练 600 步。两团点线性可分,准确率会到 100%;切到异或,同一条逻辑回归只能把准确率推到 75% 左右,再怎么训练也上不去。这条蓝线就是它的全部能力。</div>
+  </div>
+
+  <div class="quiz" data-id="q-01-4">
+    <p class="q">用单个神经元分类 XOR 的四个角点,在这四种激活函数中任选,训练到最好,准确率上限是多少?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="50% 是随机猜的水平。一条直线至少能把四个角点中的三个分对,所以上限高于 50%。">50%</button>
+      <button class="opt" data-k="B" data-ok data-why="对。一个神经元只有一条直线,四个角点里总有一个会被分到错误的一侧,最好成绩是 3/4 = 75%。">75%</button>
+      <button class="opt" data-k="C" data-why="要 100% 需要两条线:一条隔离一个角点,另一条处理剩下的对角点。一个神经元只能画一条线,所以做不到。">100%</button>
+      <button class="opt" data-k="D" data-why="激活函数是单调的,不会移动 z = 0 的直线。ReLU 只是把负半轴压成 0,分界线的位置和方向都没变,所以仍然到不了 100%。">取决于激活函数,ReLU 可以到 100%</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <div class="stat-row">
+    <div class="stat"><b>860 亿</b><span>人脑神经元数量</span></div>
+    <div class="stat"><b>100 万亿</b><span>人脑突触连接数量级</span></div>
+    <div class="stat"><b>3</b><span>本章双输入神经元的参数</span></div>
+    <div class="stat"><b>75%</b><span>单神经元在 XOR 上的上限</span></div>
+  </div>
+
+  <h3><span class="h3-n">1.6</span>用 20 行 numpy 训练它</h3>
+  <p>训练一个二分类神经元,需要定义一个损失(loss)来衡量输出与标签差多远。二分类用二元交叉熵(binary cross-entropy,ln 为自然对数):对错得越离谱,值越大。</p>
+  <div class="math"><var>L</var> = −[ <var>y</var> ln <var>a</var> + (1 − <var>y</var>) ln(1 − <var>a</var>) ]</div>
+  <p>把 L 对 z 求导,结果干净得出奇:∂(偏)是偏导,∂L/∂z = a − y。再往参数上传,∂L/∂wᵢ = (a − y)xᵢ,∂L/∂b = a − y。也就是说,每个权重该往哪边调、调多少,只取决于"预测减标签"这个误差,再乘上对应的输入。这就是反向传播(backpropagation)在一个神经元上的全部内容;第 05 章会把它推广到多层。</p>
+
+  <details class="fold">
+    <summary>点开看这两个梯度怎么来的</summary>
+    <div class="fold-body">
+      <p>对 sigmoid,σ′(z) = a(1 − a)。把 L 对 a 求导:</p>
+      <div class="math math-note">∂L/∂a = −y/a + (1 − y)/(1 − a) = (a − y) / [a(1 − a)]</div>
+      <p>再用链式法则(chain rule)乘上 σ′(z) = a(1 − a),分母正好约掉:</p>
+      <div class="math math-note">∂L/∂z = (a − y) / [a(1 − a)] × a(1 − a) = a − y</div>
+      <p>最后 z 对 wᵢ 的偏导就是 xᵢ,对 b 的偏导是 1,于是得到正文里的两个式子。</p>
+    </div>
+  </details>
+
+  <div class="code-wrap">
+    <div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div>
+    <pre class="code"><code>import numpy as np
+
+rng = np.random.default_rng(0)
+# 两类点:0 类在左上,1 类在右下
+n = 120
+X0 = rng.normal([-1.0, 0.8], 0.45, size=(n // 2, 2))
+X1 = rng.normal([ 1.0,-0.8], 0.45, size=(n // 2, 2))
+X  = np.vstack([X0, X1])
+y  = np.r_[np.zeros(n // 2), np.ones(n // 2)]
+
+w = np.zeros(2)
+b = 0.0
+lr = 0.5
+for epoch in range(300):
+    z = X @ w + b
+    a = 1 / (1 + np.exp(-z))        # sigmoid
+    dz = a - y                      # 损失对 z 的梯度
+    w -= lr * (X.T @ dz) / n
+    b -= lr * dz.mean()
+
+pred = (X @ w + b > 0).astype(int)
+print(w, b, (pred == y).mean())
+# 训练 300 轮后约 [3.5 -3.0],b≈0,准确率 1.0(随种子浮动)</code></pre>
+  </div>
+
+  <p>这段代码在 120 个点上训练 300 轮(epoch),学习率取 0.5。两个权重训练 300 轮后大约落在 (3.5, −3.0) 附近(随随机种子浮动),偏置始终在 0 附近,训练集(training set)准确率 100%。注意它成功的前提:这两团点本来就线性可分。把数据换成 XOR,同一个脚本的准确率会停在 75% 左右,加多少轮都一样。</p>
+  <p>你现在已经拥有一个完整的、可训练的神经元:前向是 w·x + b 再套激活函数,反向是 (a − y) 乘输入,更新是减去学习率乘梯度。下一章把单个神经元排成向量、把一层排成矩阵,你会看到同样的计算如何一次处理成百上千个样本。</p>
+
+  <div class="ch-foot">
+    <span class="state" data-state></span>
+    <span class="sp"></span>
+    <a class="btn" href="#ch-02-matrix">下一章 →</a>
+  </div>
+</section>
+
+<script>
+defineDemo('d-01-neuron', function (root) {
+  if (!window.NN) {
+    setTimeout(function () { window.DEMOS['d-01-neuron'](root); }, 40);
+    return;
+  }
+  const NN = window.NN;
+  const cv = root.querySelector('#cv-01-neuron');
+  const sW1 = root.querySelector('#s-01-w1');
+  const sW2 = root.querySelector('#s-01-w2');
+  const sB = root.querySelector('#s-01-b');
+  const oW1 = root.querySelector('#o-01-w1');
+  const oW2 = root.querySelector('#o-01-w2');
+  const oB = root.querySelector('#o-01-b');
+  const oZ = root.querySelector('#o-01-z');
+  const oA = root.querySelector('#o-01-a');
+  const oC = root.querySelector('#o-01-cls');
+  const seg = root.querySelector('#seg-01-act');
+  const rng = NN.mulberry32(7);
+  const pts = [];
+  for (let i = 0; i < 70; i++) {
+    pts.push({ x: [-1 + 0.42 * NN.randn(rng), -0.55 + 0.42 * NN.randn(rng)], y: 0 });
+    pts.push({ x: [1 + 0.42 * NN.randn(rng), 0.55 + 0.42 * NN.randn(rng)], y: 1 });
+  }
+  let W1 = 1.4, W2 = 0.7, B = 0.1;
+  let ACT = 'sigmoid';
+  let probe = [0.8, 0.6];
+  let map = null;
+  let training = false;
+  let fitSteps = 0;
+
+  function act(name, z) {
+    if (name === 'step') return z >= 0 ? 1 : 0;
+    if (name === 'sigmoid') return 1 / (1 + Math.exp(-z));
+    if (name === 'tanh') return Math.tanh(z);
+    return Math.max(0, z);
+  }
+  function setAct(name) {
+    ACT = name;
+    seg.querySelectorAll('button').forEach(function (b) {
+      b.setAttribute('aria-pressed', String(b.dataset.act === name));
+    });
+  }
+  function clipPoly(poly, f) {
+    const out = [];
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i], b = poly[(i + 1) % poly.length];
+      const fa = f(a), fb = f(b);
+      if (fa >= 0) out.push(a);
+      if ((fa >= 0) !== (fb >= 0)) {
+        const t = fa / (fa - fb);
+        out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+      }
+    }
+    return out;
+  }
+  function boundarySegs() {
+    const cand = [];
+    if (Math.abs(W2) > 1e-9) {
+      for (let i = 0; i < 2; i++) {
+        const x = i ? 3 : -3;
+        const y = -(W1 * x + B) / W2;
+        if (y >= -3.000001 && y <= 3.000001) cand.push([x, y]);
+      }
+    }
+    if (Math.abs(W1) > 1e-9) {
+      for (let i = 0; i < 2; i++) {
+        const y = i ? 3 : -3;
+        const x = -(W2 * y + B) / W1;
+        if (x >= -3.000001 && x <= 3.000001) cand.push([x, y]);
+      }
+    }
+    const out = [];
+    cand.forEach(function (p) {
+      let dup = false;
+      out.forEach(function (q) {
+        if (Math.abs(p[0] - q[0]) < 1e-6 && Math.abs(p[1] - q[1]) < 1e-6) dup = true;
+      });
+      if (!dup) out.push(p);
+    });
+    return out;
+  }
+  function sync() {
+    sW1.value = W1; sW2.value = W2; sB.value = B;
+    oW1.textContent = NN.fmt(W1, 2);
+    oW2.textContent = NN.fmt(W2, 2);
+    oB.textContent = NN.fmt(B, 2);
+  }
+  function draw() {
+    const r = NN.fitCanvas(cv, 320);
+    const ctx = r.ctx, w = r.w, h = r.h;
+    ctx.clearRect(0, 0, w, h);
+    const muted = NN.token('--muted', '#777');
+    const line = NN.token('--line', '#ccc');
+    const surface = NN.token('--surface', '#fff');
+    const accent = NN.token('--accent', '#1F4FD1');
+    const accent2 = NN.token('--accent2', '#C24A16');
+    const c1 = NN.token('--c1', '#2a78d6');
+    const c2 = NN.token('--c2', '#eb6834');
+    const pad = 16;
+    const size = Math.min(w - 2 * pad, h - 2 * pad);
+    const ox = (w - size) / 2, oy = (h - size) / 2;
+    const X = function (x) { return ox + (x + 3) / 6 * size; };
+    const Y = function (y) { return oy + (3 - y) / 6 * size; };
+    map = { ox: ox, oy: oy, size: size, w: w, h: h };
+
+    ctx.strokeStyle = line;
+    ctx.globalAlpha = 0.55;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = -3; i <= 3; i++) {
+      ctx.moveTo(X(i), Y(-3)); ctx.lineTo(X(i), Y(3));
+      ctx.moveTo(X(-3), Y(i)); ctx.lineTo(X(3), Y(i));
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    if (W1 !== 0 || W2 !== 0) {
+      const poly = clipPoly([[-3, -3], [3, -3], [3, 3], [-3, 3]], function (p) {
+        return W1 * p[0] + W2 * p[1] + B;
+      });
+      if (poly.length > 2) {
+        ctx.beginPath();
+        poly.forEach(function (p, i) {
+          if (i) ctx.lineTo(X(p[0]), Y(p[1]));
+          else ctx.moveTo(X(p[0]), Y(p[1]));
+        });
+        ctx.closePath();
+        ctx.fillStyle = NN.rgba(NN.hexToRgb(accent), 0.07);
+        ctx.fill();
+      }
+      const bs = boundarySegs();
+      if (bs.length >= 2) {
+        ctx.strokeStyle = accent;
+        ctx.lineWidth = 2.4;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(X(bs[0][0]), Y(bs[0][1]));
+        ctx.lineTo(X(bs[1][0]), Y(bs[1][1]));
+        ctx.stroke();
+      }
+    }
+
+    pts.forEach(function (p) {
+      ctx.beginPath();
+      ctx.arc(X(p.x[0]), Y(p.x[1]), 3.6, 0, NN.TAU);
+      ctx.fillStyle = p.y ? c2 : c1;
+      ctx.fill();
+      ctx.strokeStyle = surface;
+      ctx.lineWidth = 1.1;
+      ctx.stroke();
+    });
+
+    const px = X(probe[0]), py = Y(probe[1]);
+    ctx.strokeStyle = accent2;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(px, py, 7, 0, NN.TAU); ctx.stroke();
+    ctx.globalAlpha = 0.7;
+    ctx.beginPath();
+    ctx.moveTo(px - 11, py); ctx.lineTo(px + 11, py);
+    ctx.moveTo(px, py - 11); ctx.lineTo(px, py + 11);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = accent2;
+    ctx.font = '11px "JetBrains Mono", ui-monospace, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText('探针', px + 9, py - 7);
+
+    ctx.font = '10px "JetBrains Mono", ui-monospace, monospace';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = c1;
+    ctx.beginPath(); ctx.arc(X(-3) + 8, Y(3) + 12, 3.5, 0, NN.TAU); ctx.fill();
+    ctx.fillStyle = muted; ctx.textAlign = 'left'; ctx.fillText('0 类', X(-3) + 15, Y(3) + 12);
+    ctx.fillStyle = c2;
+    ctx.beginPath(); ctx.arc(X(-3) + 62, Y(3) + 12, 3.5, 0, NN.TAU); ctx.fill();
+    ctx.fillStyle = muted; ctx.fillText('1 类', X(-3) + 69, Y(3) + 12);
+
+    ctx.fillStyle = muted;
+    ctx.textAlign = 'right';
+    ctx.fillText('x₁', X(3) - 2, Y(0) + 12);
+    ctx.textAlign = 'left';
+    ctx.fillText('x₂', X(0) + 5, Y(3) + 4);
+
+    const z = W1 * probe[0] + W2 * probe[1] + B;
+    oZ.textContent = NN.fmt(z, 2);
+    oA.textContent = NN.fmt(act(ACT, z), 3);
+    oC.textContent = z > 0 ? '1 类' : '0 类';
+  }
+
+  function bind(sl, out, set) {
+    sl.addEventListener('input', function () {
+      const v = parseFloat(sl.value);
+      set(v);
+      out.textContent = NN.fmt(v, 2);
+      draw();
+    });
+  }
+  bind(sW1, oW1, function (v) { W1 = v; });
+  bind(sW2, oW2, function (v) { W2 = v; });
+  bind(sB, oB, function (v) { B = v; });
+
+  seg.querySelectorAll('button').forEach(function (b) {
+    b.addEventListener('click', function () {
+      setAct(b.dataset.act);
+      draw();
+    });
+  });
+
+  cv.addEventListener('pointerdown', function (e) {
+    if (!map) return;
+    const rect = cv.getBoundingClientRect();
+    const cx = (e.clientX - rect.left) * (map.w / rect.width);
+    const cy = (e.clientY - rect.top) * (map.h / rect.height);
+    const x = (cx - map.ox) / map.size * 6 - 3;
+    const y = 3 - (cy - map.oy) / map.size * 6;
+    probe = [NN.clamp(x, -3, 3), NN.clamp(y, -3, 3)];
+    draw();
+  });
+
+  function startFit() {
+    setAct('sigmoid');
+    training = true;
+    fitSteps = 0;
+  }
+  function resetAll() {
+    training = false;
+    fitSteps = 0;
+    W1 = 1.4; W2 = 0.7; B = 0.1; probe = [0.8, 0.6];
+    setAct('sigmoid');
+    sync();
+    draw();
+  }
+  root.querySelector('#b-01-fit').addEventListener('click', startFit);
+  root.querySelector('#b-01-reset').addEventListener('click', resetAll);
+  window.addEventListener('resize', draw);
+  if (window.Theme && window.Theme.on) window.Theme.on(draw);
+
+  const ticker = NN.createTicker(root, function () {
+    if (!training) return;
+    const lr = 0.9;
+    for (let k = 0; k < 3; k++) {
+      let g1 = 0, g2 = 0, gb = 0;
+      pts.forEach(function (p) {
+        const z = W1 * p.x[0] + W2 * p.x[1] + B;
+        const a = 1 / (1 + Math.exp(-z));
+        const d = a - p.y;
+        g1 += d * p.x[0]; g2 += d * p.x[1]; gb += d;
+      });
+      const n = pts.length;
+      W1 -= lr * g1 / n; W2 -= lr * g2 / n; B -= lr * gb / n;
+      fitSteps++;
+    }
+    sync();
+    draw();
+    if (fitSteps >= 180) {
+      training = false;
+      NN.toast('180 步拟合完成');
+    }
+  });
+  ticker.start();
+  sync();
+  draw();
+});
+
+defineDemo('d-01-act', function (root) {
+  if (!window.NN) {
+    setTimeout(function () { window.DEMOS['d-01-act'](root); }, 40);
+    return;
+  }
+  const NN = window.NN;
+  const cv = root.querySelector('#cv-01-act');
+  const seg = root.querySelector('#seg-01-fn');
+  const sl = root.querySelector('#s-01-z');
+  const oz = root.querySelector('#o-01-zv');
+  const oa = root.querySelector('#o-01-act-a');
+  const od = root.querySelector('#o-01-act-d');
+  const og = root.querySelector('#o-01-act-g');
+  const F = {
+    step: { f: function (z) { return z >= 0 ? 1 : 0; }, d: function () { return 0; }, maxD: 1, yr: [-0.15, 1.15] },
+    sigmoid: { f: function (z) { return 1 / (1 + Math.exp(-z)); }, d: function (z) { const s = 1 / (1 + Math.exp(-z)); return s * (1 - s); }, maxD: 0.25, yr: [-0.15, 1.15] },
+    tanh: { f: Math.tanh, d: function (z) { const t = Math.tanh(z); return 1 - t * t; }, maxD: 1, yr: [-1.2, 1.2] },
+    relu: { f: function (z) { return Math.max(0, z); }, d: function (z) { return z > 0 ? 1 : 0; }, maxD: 1, yr: [-0.5, 6.5] }
+  };
+  let key = 'sigmoid';
+  let Z = 2.0;
+
+  function satRegion(k) {
+    if (k === 'step') return [[-6, 6]];
+    if (k === 'relu') return [[-6, 0]];
+    return [[-6, -4], [4, 6]];
+  }
+  function draw() {
+    const r = NN.fitCanvas(cv, 340);
+    const ctx = r.ctx, w = r.w, h = r.h;
+    ctx.clearRect(0, 0, w, h);
+    const ink = NN.token('--ink', '#111');
+    const muted = NN.token('--muted', '#777');
+    const line = NN.token('--line', '#ccc');
+    const surface = NN.token('--surface', '#fff');
+    const c1 = NN.token('--c1', '#2a78d6');
+    const c2 = NN.token('--c2', '#eb6834');
+    const c4 = NN.token('--c4', '#eda100');
+    const fn = F[key];
+    const padL = 46, padR = 16;
+    const pw = w - padL - padR;
+    const top = 26;
+    const mid1 = Math.round(h * 0.50);
+    const top2 = Math.round(h * 0.62);
+    const bot = h - 28;
+    const X = function (z) { return padL + (z + 6) / 12 * pw; };
+    const yMax = fn.maxD * 1.15;
+    const Yt = function (v) { return top + (fn.yr[1] - v) / (fn.yr[1] - fn.yr[0]) * (mid1 - top); };
+    const Yb = function (v) { return top2 + (yMax - v) / yMax * (bot - top2); };
+
+    ctx.strokeStyle = line;
+    ctx.globalAlpha = 0.55;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let z = -6; z <= 6; z += 2) {
+      ctx.moveTo(X(z), top); ctx.lineTo(X(z), mid1);
+      ctx.moveTo(X(z), top2); ctx.lineTo(X(z), bot);
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    ctx.fillStyle = NN.rgba(NN.hexToRgb(c4), 0.12);
+    satRegion(key).forEach(function (reg) {
+      const x1 = X(reg[0]), x2 = X(reg[1]);
+      ctx.fillRect(x1, top, x2 - x1, mid1 - top);
+      ctx.fillRect(x1, top2, x2 - x1, bot - top2);
+    });
+
+    const yTicks = key === 'relu' ? [0, 2, 4, 6] : (key === 'tanh' ? [-1, 0, 1] : [0, 0.5, 1]);
+    ctx.font = '10px "JetBrains Mono", ui-monospace, monospace';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    yTicks.forEach(function (v) {
+      const y = Yt(v);
+      ctx.strokeStyle = line; ctx.globalAlpha = 0.55;
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + pw, y); ctx.stroke();
+      ctx.globalAlpha = 1; ctx.fillStyle = muted;
+      ctx.fillText(NN.fmt(v, 1), padL - 6, y);
+    });
+    [0, fn.maxD].forEach(function (v) {
+      const y = Yb(v);
+      ctx.strokeStyle = line; ctx.globalAlpha = 0.55;
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + pw, y); ctx.stroke();
+      ctx.globalAlpha = 1; ctx.fillStyle = muted;
+      ctx.fillText(NN.fmt(v, 2), padL - 6, y);
+    });
+
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = ink;
+    ctx.font = '11px "JetBrains Mono", ui-monospace, monospace';
+    ctx.fillText('a = f(z)', padL, top - 8);
+    ctx.fillText('f′(z)', padL, top2 - 10);
+    ctx.fillStyle = muted;
+    ctx.font = '10px "JetBrains Mono", ui-monospace, monospace';
+    if (key === 'step') ctx.fillText('导数几乎处处为 0', X(-5.5), top + 14);
+    else if (key === 'relu') ctx.fillText('死亡区 z 为负', X(-5.5), top + 14);
+    else ctx.fillText('饱和区', X(-5.6), top + 14);
+
+    ctx.beginPath();
+    for (let i = 0; i <= 240; i++) {
+      const z = -6 + 12 * i / 240;
+      const px = X(z), py = Yt(fn.f(z));
+      if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+    }
+    ctx.strokeStyle = c1; ctx.lineWidth = 2.2; ctx.stroke();
+
+    ctx.beginPath();
+    for (let i = 0; i <= 240; i++) {
+      const z = -6 + 12 * i / 240;
+      const px = X(z), py = Yb(fn.d(z));
+      if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+    }
+    ctx.strokeStyle = c2; ctx.lineWidth = 2.2; ctx.stroke();
+
+    const cx = X(Z);
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = muted; ctx.globalAlpha = 0.75;
+    ctx.beginPath(); ctx.moveTo(cx, top); ctx.lineTo(cx, bot); ctx.stroke();
+    ctx.setLineDash([]); ctx.globalAlpha = 1;
+
+    const ya = Yt(fn.f(Z)), yd = Yb(fn.d(Z));
+    ctx.beginPath(); ctx.arc(cx, ya, 4, 0, NN.TAU);
+    ctx.fillStyle = c1; ctx.fill();
+    ctx.strokeStyle = surface; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx, yd, 4, 0, NN.TAU);
+    ctx.fillStyle = c2; ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = muted;
+    ctx.font = '10px "JetBrains Mono", ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    [-6, -3, 0, 3, 6].forEach(function (z) { ctx.fillText(String(z), X(z), bot + 6); });
+
+    const a = fn.f(Z), d = fn.d(Z);
+    const rem = fn.maxD > 0 ? Math.max(0, d / fn.maxD * 100) : 0;
+    oa.textContent = NN.fmt(a, 3);
+    od.textContent = NN.fmt(d, 4);
+    og.textContent = NN.fmt(rem, 1) + '%';
+  }
+
+  seg.querySelectorAll('button').forEach(function (b) {
+    b.addEventListener('click', function () {
+      key = b.dataset.fn;
+      seg.querySelectorAll('button').forEach(function (x) {
+        x.setAttribute('aria-pressed', String(x === b));
+      });
+      draw();
+    });
+  });
+  sl.addEventListener('input', function () {
+    Z = parseFloat(sl.value);
+    oz.textContent = NN.fmt(Z, 1);
+    draw();
+  });
+  window.addEventListener('resize', draw);
+  if (window.Theme && window.Theme.on) window.Theme.on(draw);
+  oz.textContent = NN.fmt(Z, 1);
+  draw();
+});
+
+defineDemo('d-01-dot', function (root) {
+  if (!window.NN) {
+    setTimeout(function () { window.DEMOS['d-01-dot'](root); }, 40);
+    return;
+  }
+  const NN = window.NN;
+  const cv = root.querySelector('#cv-01-dot');
+  const sW = root.querySelector('#s-01-wang');
+  const sX = root.querySelector('#s-01-xang');
+  const sL = root.querySelector('#s-01-xlen');
+  const oW = root.querySelector('#o-01-wang');
+  const oX = root.querySelector('#o-01-xang');
+  const oL = root.querySelector('#o-01-xlen');
+  const oZ = root.querySelector('#o-01-dot-z');
+  const oC = root.querySelector('#o-01-dot-cos');
+  const oP = root.querySelector('#o-01-dot-p');
+  const oN = root.querySelector('#o-01-dot-x');
+  const WL = 2.8;
+  let AW = 30 * Math.PI / 180;
+  let AX = 75 * Math.PI / 180;
+  let XL = 2.2;
+
+  function arrow(ctx, x1, y1, x2, y2, color, width) {
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = width;
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    const ang = Math.atan2(y2 - y1, x2 - x1), len = 9;
+    ctx.beginPath(); ctx.moveTo(x2, y2);
+    ctx.lineTo(x2 - len * Math.cos(ang - 0.38), y2 - len * Math.sin(ang - 0.38));
+    ctx.lineTo(x2 - len * Math.cos(ang + 0.38), y2 - len * Math.sin(ang + 0.38));
+    ctx.closePath(); ctx.fill();
+  }
+  function draw() {
+    const r = NN.fitCanvas(cv, 320);
+    const ctx = r.ctx, w = r.w, h = r.h;
+    ctx.clearRect(0, 0, w, h);
+    const muted = NN.token('--muted', '#777');
+    const line = NN.token('--line', '#ccc');
+    const accent = NN.token('--accent', '#1F4FD1');
+    const c2 = NN.token('--c2', '#eb6834');
+    const c4 = NN.token('--c4', '#eda100');
+    const pad = 16;
+    const size = Math.min(w - 2 * pad, h - 2 * pad);
+    const cx = w / 2, cy = h / 2;
+    const scale = size / 6;
+    const X = function (x) { return cx + x * scale; };
+    const Y = function (y) { return cy - y * scale; };
+
+    ctx.strokeStyle = line;
+    ctx.globalAlpha = 0.55;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = -3; i <= 3; i++) {
+      ctx.moveTo(X(i), Y(-3)); ctx.lineTo(X(i), Y(3));
+      ctx.moveTo(X(-3), Y(i)); ctx.lineTo(X(3), Y(i));
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 0.8;
+    ctx.strokeStyle = muted;
+    ctx.beginPath();
+    ctx.moveTo(X(-3), Y(0)); ctx.lineTo(X(3), Y(0));
+    ctx.moveTo(X(0), Y(-3)); ctx.lineTo(X(0), Y(3));
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    const wx = WL * Math.cos(AW), wy = WL * Math.sin(AW);
+    const xx = XL * Math.cos(AX), xy = XL * Math.sin(AX);
+    const dot = wx * xx + wy * xy;
+    const cos = dot / (WL * XL);
+    const proj = dot / WL;
+    const px = wx / WL * proj, py = wy / WL * proj;
+
+    ctx.strokeStyle = c4;
+    ctx.globalAlpha = 0.55;
+    ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.moveTo(X(0), Y(0)); ctx.lineTo(X(px), Y(py)); ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = muted;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.moveTo(X(xx), Y(xy)); ctx.lineTo(X(px), Y(py)); ctx.stroke();
+    ctx.setLineDash([]);
+
+    arrow(ctx, X(0), Y(0), X(xx), Y(xy), c2, 2.4);
+    arrow(ctx, X(0), Y(0), X(wx), Y(wy), accent, 2.6);
+
+    const a1 = -AW, a2 = -AX;
+    let dlt = a2 - a1;
+    while (dlt > Math.PI) dlt -= 2 * Math.PI;
+    while (dlt < -Math.PI) dlt += 2 * Math.PI;
+    const rad = 0.72 * scale;
+    ctx.strokeStyle = muted;
+    ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.arc(cx, cy, rad, a1, a1 + dlt, dlt < 0); ctx.stroke();
+    const mid = a1 + dlt / 2;
+    const th = Math.acos(NN.clamp(cos, -1, 1)) * 180 / Math.PI;
+    ctx.fillStyle = muted;
+    ctx.font = '11px "JetBrains Mono", ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(NN.fmt(th, 0) + '°', cx + Math.cos(mid) * (rad + 15), cy + Math.sin(mid) * (rad + 15));
+
+    ctx.font = '11px "JetBrains Mono", ui-monospace, monospace';
+    ctx.textBaseline = 'middle';
+    const sxw = X(wx), syw = Y(wy);
+    const dlw = Math.hypot(sxw - cx, syw - cy) || 1;
+    ctx.fillStyle = accent;
+    ctx.fillText('w', sxw + (sxw - cx) / dlw * 14, syw + (syw - cy) / dlw * 14);
+    const sxx = X(xx), syx = Y(xy);
+    const dlx = Math.hypot(sxx - cx, syx - cy) || 1;
+    ctx.fillStyle = c2;
+    ctx.fillText('x', sxx + (sxx - cx) / dlx * 14, syx + (syx - cy) / dlx * 14);
+    if (Math.abs(proj) > 0.15) {
+      ctx.fillStyle = c4;
+      ctx.textAlign = 'left';
+      ctx.fillText('proj', X(px) + 8, Y(py) - 8);
+    }
+
+    oZ.textContent = NN.fmt(dot, 2);
+    oC.textContent = NN.fmt(cos, 2);
+    oP.textContent = NN.fmt(proj, 2);
+    oN.textContent = NN.fmt(XL, 2);
+  }
+
+  function bind(sl, out, set, dec) {
+    sl.addEventListener('input', function () {
+      const v = parseFloat(sl.value);
+      set(v);
+      out.textContent = NN.fmt(v, dec);
+      draw();
+    });
+  }
+  bind(sW, oW, function (v) { AW = v * Math.PI / 180; }, 0);
+  bind(sX, oX, function (v) { AX = v * Math.PI / 180; }, 0);
+  bind(sL, oL, function (v) { XL = v; }, 1);
+  window.addEventListener('resize', draw);
+  if (window.Theme && window.Theme.on) window.Theme.on(draw);
+  draw();
+});
+
+defineDemo('d-01-xor', function (root) {
+  if (!window.NN) {
+    setTimeout(function () { window.DEMOS['d-01-xor'](root); }, 40);
+    return;
+  }
+  const NN = window.NN;
+  const cv = root.querySelector('#cv-01-xor');
+  const seg = root.querySelector('#seg-01-data');
+  const btn = root.querySelector('#b-01-retrain');
+  const oAcc = root.querySelector('#o-01-xor-acc');
+  const oStep = root.querySelector('#o-01-xor-step');
+  const BD = 2.6;
+  let mode = 'blobs';
+  let pts = [];
+  let W = [0.8, -0.4];
+  let B = 0;
+  let steps = 0;
+  let training = false;
+
+  function makeData(m) {
+    const rng = NN.mulberry32(m === 'xor' ? 11 : 12);
+    const out = [];
+    if (m === 'blobs') {
+      for (let i = 0; i < 70; i++) {
+        out.push({ x: [-1 + 0.45 * NN.randn(rng), -0.7 + 0.45 * NN.randn(rng)], y: 0 });
+        out.push({ x: [1 + 0.45 * NN.randn(rng), 0.7 + 0.45 * NN.randn(rng)], y: 1 });
+      }
+    } else {
+      const cs = [[-1.1, -1.1, 0], [-1.1, 1.1, 1], [1.1, -1.1, 1], [1.1, 1.1, 0]];
+      cs.forEach(function (c) {
+        for (let i = 0; i < 35; i++) {
+          out.push({ x: [c[0] + 0.38 * NN.randn(rng), c[1] + 0.38 * NN.randn(rng)], y: c[2] });
+        }
+      });
+    }
+    return out;
+  }
+  function reset() {
+    training = false;
+    pts = makeData(mode);
+    W = mode === 'blobs' ? [0.8, -0.4] : [0.4, 0.3];
+    B = 0;
+    steps = 0;
+  }
+  function accuracy() {
+    let ok = 0;
+    pts.forEach(function (p) {
+      const z = W[0] * p.x[0] + W[1] * p.x[1] + B;
+      if ((z > 0 ? 1 : 0) === p.y) ok++;
+    });
+    return pts.length ? ok / pts.length : 0;
+  }
+  function clipPoly(poly, f) {
+    const out = [];
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i], b = poly[(i + 1) % poly.length];
+      const fa = f(a), fb = f(b);
+      if (fa >= 0) out.push(a);
+      if ((fa >= 0) !== (fb >= 0)) {
+        const t = fa / (fa - fb);
+        out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+      }
+    }
+    return out;
+  }
+  function boundarySegs() {
+    const cand = [];
+    if (Math.abs(W[1]) > 1e-9) {
+      for (let i = 0; i < 2; i++) {
+        const x = i ? BD : -BD;
+        const y = -(W[0] * x + B) / W[1];
+        if (y >= -BD && y <= BD) cand.push([x, y]);
+      }
+    }
+    if (Math.abs(W[0]) > 1e-9) {
+      for (let i = 0; i < 2; i++) {
+        const y = i ? BD : -BD;
+        const x = -(W[1] * y + B) / W[0];
+        if (x >= -BD && x <= BD) cand.push([x, y]);
+      }
+    }
+    const out = [];
+    cand.forEach(function (p) {
+      let dup = false;
+      out.forEach(function (q) {
+        if (Math.abs(p[0] - q[0]) < 1e-6 && Math.abs(p[1] - q[1]) < 1e-6) dup = true;
+      });
+      if (!dup) out.push(p);
+    });
+    return out;
+  }
+  function draw() {
+    const r = NN.fitCanvas(cv, 320);
+    const ctx = r.ctx, w = r.w, h = r.h;
+    ctx.clearRect(0, 0, w, h);
+    const muted = NN.token('--muted', '#777');
+    const line = NN.token('--line', '#ccc');
+    const surface = NN.token('--surface', '#fff');
+    const accent = NN.token('--accent', '#1F4FD1');
+    const c1 = NN.token('--c1', '#2a78d6');
+    const c2 = NN.token('--c2', '#eb6834');
+    const pad = 16;
+    const size = Math.min(w - 2 * pad, h - 2 * pad);
+    const ox = (w - size) / 2, oy = (h - size) / 2;
+    const X = function (x) { return ox + (x + BD) / (2 * BD) * size; };
+    const Y = function (y) { return oy + (BD - y) / (2 * BD) * size; };
+
+    ctx.strokeStyle = line;
+    ctx.globalAlpha = 0.55;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = -2; i <= 2; i++) {
+      ctx.moveTo(X(i), Y(-BD)); ctx.lineTo(X(i), Y(BD));
+      ctx.moveTo(X(-BD), Y(i)); ctx.lineTo(X(BD), Y(i));
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    if (W[0] !== 0 || W[1] !== 0) {
+      const poly = clipPoly([[-BD, -BD], [BD, -BD], [BD, BD], [-BD, BD]], function (p) {
+        return W[0] * p[0] + W[1] * p[1] + B;
+      });
+      if (poly.length > 2) {
+        ctx.beginPath();
+        poly.forEach(function (p, i) {
+          if (i) ctx.lineTo(X(p[0]), Y(p[1]));
+          else ctx.moveTo(X(p[0]), Y(p[1]));
+        });
+        ctx.closePath();
+        ctx.fillStyle = NN.rgba(NN.hexToRgb(accent), 0.07);
+        ctx.fill();
+      }
+      const bs = boundarySegs();
+      if (bs.length >= 2) {
+        ctx.strokeStyle = accent;
+        ctx.lineWidth = 2.4;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(X(bs[0][0]), Y(bs[0][1]));
+        ctx.lineTo(X(bs[1][0]), Y(bs[1][1]));
+        ctx.stroke();
+      }
+    }
+
+    pts.forEach(function (p) {
+      ctx.beginPath();
+      ctx.arc(X(p.x[0]), Y(p.x[1]), 3.4, 0, NN.TAU);
+      ctx.fillStyle = p.y ? c2 : c1;
+      ctx.fill();
+      ctx.strokeStyle = surface;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    });
+
+    ctx.font = '10px "JetBrains Mono", ui-monospace, monospace';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = c1;
+    ctx.beginPath(); ctx.arc(X(-BD) + 8, Y(BD) + 12, 3.5, 0, NN.TAU); ctx.fill();
+    ctx.fillStyle = muted; ctx.textAlign = 'left'; ctx.fillText('0 类', X(-BD) + 15, Y(BD) + 12);
+    ctx.fillStyle = c2;
+    ctx.beginPath(); ctx.arc(X(-BD) + 62, Y(BD) + 12, 3.5, 0, NN.TAU); ctx.fill();
+    ctx.fillStyle = muted; ctx.fillText('1 类', X(-BD) + 69, Y(BD) + 12);
+
+    oAcc.textContent = Math.round(accuracy() * 100) + '%';
+    oStep.textContent = String(steps);
+  }
+
+  function train() {
+    steps = 0;
+    training = true;
+  }
+
+  seg.querySelectorAll('button').forEach(function (b) {
+    b.addEventListener('click', function () {
+      mode = b.dataset.mode;
+      seg.querySelectorAll('button').forEach(function (x) {
+        x.setAttribute('aria-pressed', String(x === b));
+      });
+      reset();
+      draw();
+      train();
+    });
+  });
+  btn.addEventListener('click', function () {
+    reset();
+    draw();
+    train();
+  });
+  window.addEventListener('resize', draw);
+  if (window.Theme && window.Theme.on) window.Theme.on(draw);
+
+  const ticker = NN.createTicker(root, function () {
+    if (!training) return;
+    const lr = mode === 'blobs' ? 1.0 : 0.7;
+    for (let k = 0; k < 4; k++) {
+      let g0 = 0, g1 = 0, gb = 0;
+      pts.forEach(function (p) {
+        const z = W[0] * p.x[0] + W[1] * p.x[1] + B;
+        const a = 1 / (1 + Math.exp(-z));
+        const d = a - p.y;
+        g0 += d * p.x[0]; g1 += d * p.x[1]; gb += d;
+      });
+      const n = pts.length;
+      W[0] -= lr * g0 / n; W[1] -= lr * g1 / n; B -= lr * gb / n;
+      steps++;
+    }
+    draw();
+    if (steps >= 600) training = false;
+  });
+  ticker.start();
+  reset();
+  draw();
+  train();
+});
+</script>

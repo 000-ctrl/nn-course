@@ -1,0 +1,631 @@
+<section class="ch" id="ch-05-backprop" data-num="05" data-title="反向传播">
+  <header class="ch-head">
+    <div class="ch-eyebrow"><span class="dot"></span>第 05 章 · 核心</div>
+    <h1 class="ch-title">反向传播</h1>
+    <p class="ch-sub">损失算出来以后,每个权重该往哪边挪、挪多少,一次算清。</p>
+    <div class="ch-rule"></div>
+  </header>
+
+  <div class="prereq"><b>读前</b><span>第 01 章的 sigmoid 激活、第 03 章的导数与梯度下降(按梯度反方向更新参数)、第 04 章的多层网络与隐藏层;5.3 的矩阵写法另需第 02 章的矩阵乘法与转置。</span><b>可跳过</b><span>5.4 的 Python 代码块、5.5 与 5.6 两个交互演示,跳过不影响 5.2 手算与 5.7 总结。</span></div>
+
+  <p class="lead">训练网络时,你真正需要的不是一句“网络对不对”,而是 13,002 个参数(parameter,即权重 weight 与偏置 bias)里每一个的偏导数(partial derivative):把某个权重调大一点点,损失(loss)会变大还是变小,变化多少。反向传播(backpropagation)就是一次算出全部这些偏导数的方法。它不是另一种网络,也不是优化器,只是一套把链式法则(chain rule)用在计算图(computational graph)上的记账流程。这一章从一个 2-2-1 网络开始,把每个 z、a、δ 和梯度(gradient)算到小数点后六位。</p>
+
+  <h3><span class="h3-n">5.1</span>计算图:把网络拆成一串小账本</h3>
+  <p>计算图是一张有向图:节点(node)保存一个数值,有向边(edge)表示一次运算。前向传播(forward pass)从输入出发,沿着边一路算到损失:数据在左边,预测在右边,中间每个节点都只依赖它前面的节点。反向传播则从最右边的损失出发,沿着同一条路倒着走,把“损失对每个中间量的敏感度”一层层传回去。</p>
+  <p>拿一个 2-2-1 网络具体化:两个输入 x<sub>1</sub>、x<sub>2</sub>,两个隐藏神经元,一个输出神经元。每个神经元先算加权和 z,再用 sigmoid 函数 σ 把 z 压到 0 到 1 之间。隐藏层(hidden layer)的第一个神经元做的是:</p>
+  <div class="math"><var>z</var><sub>1</sub> = <var>b</var><sub>1</sub> + <var>w</var><sub>11</sub><var>x</var><sub>1</sub> + <var>w</var><sub>12</sub><var>x</var><sub>2</sub> , &nbsp;&nbsp; <var>a</var><sub>1</sub> = σ(<var>z</var><sub>1</sub>) = 1 / (1 + e<sup>−<var>z</var><sub>1</sub></sup>)</div>
+  <p>第二个隐藏神经元同理,只是换一组 w 和 b。输出层把两个隐藏激活(activation) a<sub>1</sub>、a<sub>2</sub> 再加权一次,得到 z<sub>3</sub> 和 a<sub>3</sub>。这个 a<sub>3</sub> 就是预测值。sigmoid 的导数有一个很方便的形式:σ′(z) = σ(z)(1 − σ(z)) = a(1 − a)。记住这一点,后面的每个 δ 都要乘它。</p>
+  <p>损失把预测和目标 t 压成一个数。这里用平方损失 L = ½(a<sub>3</sub> − t)<sup>2</sup>;二分类更常用交叉熵(cross-entropy),两者在反向传播的结构上完全一样,只是输出层 δ 的公式不同。计算图的关键不是画得好看,而是每个节点都保留了自己的输入值:反向走到某个节点时,它需要知道前向时这个节点的 z 和 a 是多少。前向只算数,反向才用这些数算导数。</p>
+  <div class="math"><var>L</var> = ½(<var>a</var><sub>3</sub> − <var>t</var>)<sup>2</sup></div>
+  <p>把整张图连起来看:输入 → z<sub>1</sub>、z<sub>2</sub> → a<sub>1</sub>、a<sub>2</sub> → z<sub>3</sub> → a<sub>3</sub> → L。反向传播要回答的是:如果我把 L 往上推一点,链条上每个 z、每个 a、每个 w 分别要承担多少责任。链式法则把这个问题拆成许多局部问题,每个节点只需要知道“我对下一节点的局部导数”,再乘上“下一节点已经收到的上游梯度”。</p>
+  <div class="callout key"><b>核心</b><p>反向传播不是把前向再跑一遍,而是把前向保存下来的中间值倒着用一遍。每个节点做一次局部乘法和一次加法,全部参数的梯度就同时有了。</p></div>
+
+  <h3><span class="h3-n">5.2</span>手算一个 2-2-1 网络</h3>
+  <p>设输入 x<sub>1</sub> = 1.0,x<sub>2</sub> = 0.5,目标 t = 1.0。隐藏层权重 w<sub>11</sub> = 0.5、w<sub>12</sub> = −0.3、w<sub>21</sub> = 0.8、w<sub>22</sub> = 0.2;隐藏层偏置 b<sub>1</sub> = 0.1、b<sub>2</sub> = −0.2。输出层权重 v<sub>1</sub> = 0.6、v<sub>2</sub> = −0.4,输出偏置 b<sub>3</sub> = 0.2。所有激活都是 sigmoid。</p>
+  <p>前向第一步,算两个隐藏神经元的预激活(pre-activation):</p>
+  <div class="math"><var>z</var><sub>1</sub> = 0.1 + 0.5×1.0 + (−0.3)×0.5 = 0.45</div>
+  <div class="math"><var>z</var><sub>2</sub> = −0.2 + 0.8×1.0 + 0.2×0.5 = 0.70</div>
+  <p>过 sigmoid,得到隐藏激活:</p>
+  <div class="math"><var>a</var><sub>1</sub> = σ(0.45) = 0.610639 , &nbsp;&nbsp; <var>a</var><sub>2</sub> = σ(0.70) = 0.668188</div>
+  <p>输出层把这两个数加权求和:</p>
+  <div class="math"><var>z</var><sub>3</sub> = 0.2 + 0.6×0.610639 + (−0.4)×0.668188 = 0.299108</div>
+  <div class="math"><var>a</var><sub>3</sub> = σ(0.299108) = 0.574225</div>
+  <p>预测是 0.574225,目标是 1.0,所以平方损失是:</p>
+  <div class="math"><var>L</var> = ½(0.574225 − 1.0)<sup>2</sup> = 0.090642</div>
+  <p>前向到这里结束。现在反向。输出层的 δ 定义为损失对输出预激活 z<sub>3</sub> 的导数,∂ 读作偏导(partial derivative)。平方损失先对 a<sub>3</sub> 求导,得 (a<sub>3</sub> − t);a<sub>3</sub> 再对 z<sub>3</sub> 求导,得 a<sub>3</sub>(1 − a<sub>3</sub>)。两者相乘:</p>
+  <div class="math">δ<sub>3</sub> = ∂<var>L</var>/∂<var>z</var><sub>3</sub> = (<var>a</var><sub>3</sub> − <var>t</var>)·<var>a</var><sub>3</sub>(1 − <var>a</var><sub>3</sub>) = (−0.425775)(0.574225)(0.425775) = −0.104098</div>
+  <p>δ<sub>3</sub> 是负数。意思是:把 z<sub>3</sub> 往上推 0.01,损失大约变化 −0.001041,也就是减少 0.001041。接下来,输出层权重和偏置的梯度就是 δ<sub>3</sub> 乘上各自的输入:</p>
+  <div class="math">∂<var>L</var>/∂<var>v</var><sub>1</sub> = δ<sub>3</sub><var>a</var><sub>1</sub> = −0.063566 , &nbsp;&nbsp; ∂<var>L</var>/∂<var>v</var><sub>2</sub> = δ<sub>3</sub><var>a</var><sub>2</sub> = −0.069557 , &nbsp;&nbsp; ∂<var>L</var>/∂<var>b</var><sub>3</sub> = δ<sub>3</sub> = −0.104098</div>
+  <p>隐藏层的 δ 不能直接抄输出层的数。它要先接收输出层传回来的责任,再乘上自己这层的激活斜率。对第一个隐藏神经元:</p>
+  <div class="math">δ<sub>1</sub> = δ<sub>3</sub>·<var>v</var><sub>1</sub>·<var>a</var><sub>1</sub>(1 − <var>a</var><sub>1</sub>) = (−0.104098)(0.6)(0.610639)(0.389361) = −0.014850</div>
+  <div class="math">δ<sub>2</sub> = δ<sub>3</sub>·<var>v</var><sub>2</sub>·<var>a</var><sub>2</sub>(1 − <var>a</var><sub>2</sub>) = (−0.104098)(−0.4)(0.668188)(0.331812) = +0.009232</div>
+  <p>δ<sub>2</sub> 是正数,因为输出权重 v<sub>2</sub> 是负的,负负得正。这个符号很重要:它说明把 z<sub>2</sub> 往上推会让损失变大,所以待会儿更新时 w<sub>21</sub>、w<sub>22</sub> 应该减小。最后,每个隐藏层权重和偏置的梯度,都是它对应的 δ 乘上输入:</p>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>参数</th><th>梯度公式</th><th>数值</th></tr></thead>
+      <tbody>
+        <tr><td>w<sub>11</sub></td><td>δ<sub>1</sub>x<sub>1</sub> = −0.014850×1.0</td><td class="num">−0.014850</td></tr>
+        <tr><td>w<sub>12</sub></td><td>δ<sub>1</sub>x<sub>2</sub> = −0.014850×0.5</td><td class="num">−0.007425</td></tr>
+        <tr><td>w<sub>21</sub></td><td>δ<sub>2</sub>x<sub>1</sub> = 0.009232×1.0</td><td class="num">+0.009232</td></tr>
+        <tr><td>w<sub>22</sub></td><td>δ<sub>2</sub>x<sub>2</sub> = 0.009232×0.5</td><td class="num">+0.004616</td></tr>
+        <tr><td>b<sub>1</sub></td><td>δ<sub>1</sub></td><td class="num">−0.014850</td></tr>
+        <tr><td>b<sub>2</sub></td><td>δ<sub>2</sub></td><td class="num">+0.009232</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>取学习率(learning rate)η = 1.5,按 w ← w − η·∂L/∂w 更新一次:</p>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>参数</th><th>旧值</th><th>梯度</th><th>新值</th></tr></thead>
+      <tbody>
+        <tr><td>w<sub>11</sub></td><td class="num">0.500000</td><td class="num">−0.014850</td><td class="num">0.522275</td></tr>
+        <tr><td>w<sub>12</sub></td><td class="num">−0.300000</td><td class="num">−0.007425</td><td class="num">−0.288862</td></tr>
+        <tr><td>w<sub>21</sub></td><td class="num">0.800000</td><td class="num">+0.009232</td><td class="num">0.786152</td></tr>
+        <tr><td>w<sub>22</sub></td><td class="num">0.200000</td><td class="num">+0.004616</td><td class="num">0.193076</td></tr>
+        <tr><td>v<sub>1</sub></td><td class="num">0.600000</td><td class="num">−0.063566</td><td class="num">0.695350</td></tr>
+        <tr><td>v<sub>2</sub></td><td class="num">−0.400000</td><td class="num">−0.069557</td><td class="num">−0.295664</td></tr>
+        <tr><td>b<sub>3</sub></td><td class="num">0.200000</td><td class="num">−0.104098</td><td class="num">0.356147</td></tr>
+        <tr><td>b<sub>1</sub></td><td class="num">0.100000</td><td class="num">−0.014850</td><td class="num">0.122275</td></tr>
+        <tr><td>b<sub>2</sub></td><td class="num">−0.200000</td><td class="num">+0.009232</td><td class="num">−0.213848</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>更新后再前向一次,输出从 0.574225 变成 0.644165,损失从 0.090642 降到 0.063309,一步下降 30.2%。这就是一次完整的“前向—损失—反向—更新”。真实网络只是把这套动作堆到几十层、几百万个参数,每一步的算术完全相同。</p>
+  <div class="callout tip"><b>检查符号</b><p>梯度为负,更新时减去负数,参数会变大;梯度为正,参数会变小。上面的 w<sub>11</sub> 从 0.5 增到 0.522275,而 w<sub>21</sub> 从 0.8 减到 0.786152,正好对应两个 δ 的符号。</p></div>
+
+  <div class="quiz" data-id="q-05-1">
+    <p class="q">在 5.2 的 2-2-1 网络里,输出层 δ<sub>3</sub> = −0.1041。下面哪种理解最准确?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="δ 不是对权重的梯度。要得到 ∂L/∂v1,还得乘以上一层激活 a1;这里 ∂L/∂v1 = −0.0636,不是 −0.1041。">它表示输出权重 v1 必须增加 0.1041。</button>
+      <button class="opt" data-k="B" data-ok data-why="δ3 = ∂L/∂z3。z3 增加 0.01 时,损失大约变化 δ3×0.01 = −0.001041,也就是减少约 0.001041。">z3 增加 0.01,损失大约减少 0.001041。</button>
+      <button class="opt" data-k="C" data-why="隐藏层 δ 还要乘输出权重和隐藏层的激活斜率:δ1 = δ3·v1·a1(1−a1) = −0.01485,不等于 −0.1041。">隐藏层第一个神经元的 δ 也是 −0.1041。</button>
+      <button class="opt" data-k="D" data-why="−0.1041 是损失对 z3 的敏感度。预测误差是 a3−t = −0.4258;两者差了一个 sigmoid 斜率 a3(1−a3)。">网络预测值比目标小 0.1041。</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">5.3</span>δ 到底在说什么</h3>
+  <p>δ 的定义只有一个:损失对某个预激活 z 的导数,δ = ∂L/∂z。它不是“误差”,也不是“权重梯度”,而是这个神经元在当前位置的敏感度。把 z 增加一个很小的量 ε,损失大约变化 δ·ε。δ 的绝对值大,说明这个神经元稍微一动,损失就动得很厉害;δ 接近 0,说明它当前对损失几乎没有影响。</p>
+  <p>具体到上面的数字:δ<sub>3</sub> = −0.104098,所以 z<sub>3</sub> 增加 0.01,损失减少约 0.001041;δ<sub>1</sub> = −0.014850,所以 z<sub>1</sub> 增加 0.01,损失只减少约 0.0001485。输出层显然比第一个隐藏神经元更“靠近”损失,敏感度更大。但隐藏层的 δ 并不是零,因为输出权重 v<sub>1</sub> = 0.6 把责任传了回来,只是又乘了一次 0.237759 的激活斜率,所以只剩约七分之一。</p>
+  <p>为什么隐藏层的 δ 要乘激活斜率?因为 z 不能直接影响损失,它只能先改变 a = σ(z),a 再去影响下一层。链式法则要求把每一小段的局部导数乘起来。sigmoid 在 a = 0.610639 处的斜率是 a(1 − a) = 0.237759;如果神经元饱和到 a = 0.99,斜率只剩 0.0099,传回来的 δ 会被压到原来的 4% 左右。这就是“梯度消失”(vanishing gradient)在单个神经元上的算术来源。</p>
+  <p>把一层写成矩阵,关系更清楚。设第 l 层的预激活为 z<sup>(l)</sup>,激活为 a<sup>(l)</sup>,权重矩阵为 W<sup>(l)</sup>(上标 (l) 是层号),那么:</p>
+  <div class="math">δ<sup>(l)</sup> = ((<var>W</var><sup>(l+1)</sup>)<sup>T</sup>δ<sup>(l+1)</sup>) ⊙ σ′(<var>z</var><sup>(l)</sup>)</div>
+  <div class="math">∇<sub><var>W</var><sup>(l)</sup></sub><var>L</var> = δ<sup>(l)</sup>(<var>a</var><sup>(l−1)</sup>)<sup>T</sup> , &nbsp;&nbsp; ∇<sub><var>b</var><sup>(l)</sup></sub><var>L</var> = δ<sup>(l)</sup></div>
+  <p>第一行里的 ⊙ 是逐元素乘积(elementwise product):先把下一层的 δ 用 W<sup>T</sup> 加权求和,再逐个乘本层的斜率;W<sup>T</sup> 的 T 是转置(transpose),∇ 读作梯度(gradient)。第二行是外积(outer product):一个 n<sub>l</sub>×1 的 δ 乘一个 1×n<sub>l−1</sub> 的激活行向量,这里的 n<sub>l</sub> 是第 l 层的神经元个数,正好得到 n<sub>l</sub>×n<sub>l−1</sub> 的权重梯度矩阵,形状和 W<sup>(l)</sup> 完全一致。偏置的梯度就是 δ 本身,因为偏置对 z 的导数是 1。</p>
+
+  <h4>雅可比矩阵(Jacobian)</h4>
+  <p>把第 l 层每个预激活 z<sub>i</sub><sup>(l)</sup> 对上一层每个激活 a<sub>j</sub><sup>(l−1)</sup> 的偏导数排成一张表:第 i 行第 j 列是 ∂z<sub>i</sub><sup>(l)</sup>/∂a<sub>j</sub><sup>(l−1)</sup>,整张表是 n<sub>l</sub>×n<sub>l−1</sub> 的。这张表叫这一层的雅可比矩阵(Jacobian),它回答的是:上一层第 j 个激活动 0.01,这一层第 i 个预激活会动多少。</p>
+  <p>对全连接层,雅可比正好是权重矩阵 W<sup>(l)</sup>;反向传播每退一层,做的就是乘它的转置。拿 5.2 验证:输出层只有一个神经元,它的雅可比是 W<sup>(2)</sup> = [0.6, −0.4],δ<sub>3</sub> = −0.104098 乘它的转置,得到两个隐藏神经元收到的上游责任 −0.062459 和 +0.041639,再分别乘激活斜率 0.237759、0.221713,正好是 δ<sub>1</sub> = −0.014850、δ<sub>2</sub> = +0.009232。第 4 章提到过它(那里的叫法是“局部导数矩阵”),第 9 章处理序列时也会反复用到它。</p>
+  <p>输出层的公式取决于损失。sigmoid 加平方损失时,δ = (a − t)a(1 − a);sigmoid 加二元交叉熵(binary cross-entropy, BCE)时,斜率被约掉,δ = a − t;softmax 加交叉熵时,δ = p − y,其中 p 是预测概率向量,y 是独热(one-hot)目标,只有正确类别那一维是 1。三种情况的外层结构一样,只是输出层这个起点不同。写代码时先把输出层 δ 算对,后面的反向循环可以完全复用。</p>
+  <div class="callout warn"><b>常见误解:反向传播会学习</b><p>反向传播只计算梯度,不改变任何权重。把学习率设为 0,它仍然会算出一整套 ∂L/∂θ,但参数一个也不动;真正改权重的是优化器(optimizer),例如 SGD 或 Adam。另一个等价的说法是:反向传播不是梯度下降(gradient descent),它只是梯度下降需要的那一步求导。</p></div>
+
+  <h3><span class="h3-n">5.4</span>梯度检查与成本</h3>
+  <p>反向传播最容易错的地方不是公式,而是一个下标、一个转置或者一个符号。梯度检查(gradient check)用数值方法独立算一遍导数,再和反向传播的结果对比。中心差分(central difference)的公式是:</p>
+  <div class="math">∂<var>L</var>/∂θ ≈ (<var>L</var>(θ + ε) − <var>L</var>(θ − ε)) / (2ε)</div>
+  <p>它不需要推导,只需要把同一个参数往上挪 ε、往下挪 ε,各做一次前向,看损失差多少。对上面的 w<sub>11</sub>,取 ε = 10<sup>−5</sup>,中心差分给出 −0.0148501599205,反向传播给出 −0.0148501599225,两者相差 2.0×10<sup>−12</sup>,相对误差 1.3×10<sup>−10</sup>。前 11 位小数完全一样,差别只在第 12 位,说明反向传播的实现是对的。</p>
+  <p>实践中不会检查全部参数。随机抽 5 到 10 个标量,用 float64(双精度,约 16 位有效数字),ε 取 10<sup>−5</sup> 左右;相对误差小于 10<sup>−7</sup> 通常没问题,大于 10<sup>−4</sup> 就说明某个地方写错了。检查时要关掉 dropout(训练时随机丢神经元)、batch normalization(按每个小批量的均值方差把激活拉回标准尺度)的滑动统计等随机或状态相关的操作,否则两次前向的损失不可比。float32(单精度,约 7 位有效数字)下 ε 要放大到 10<sup>−3</sup> 左右,容差也要放宽,因为舍入误差会淹没太小的差分。</p>
+  <div class="code-wrap">
+    <div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div>
+    <pre class="code"><code>import numpy as np
+def sigmoid(z): return 1/(1+np.exp(-z))
+
+x = np.array([1.0, 0.5]); t = 1.0
+W1 = np.array([[0.5, -0.3], [0.8, 0.2]])
+b1 = np.array([0.1, -0.2])
+W2 = np.array([[0.6, -0.4]]); b3 = np.array([0.2])
+
+# 前向:缓存 z 与 a,反向要用
+z1 = W1 @ x + b1
+a1 = sigmoid(z1)
+z3 = (W2 @ a1 + b3)[0]
+a3 = sigmoid(z3)
+L = 0.5 * (a3 - t) ** 2
+
+# 输出层 δ,再回传隐藏层 δ
+d3 = (a3 - t) * a3 * (1 - a3)
+dW2 = np.outer([d3], a1); db3 = np.array([d3])
+d1 = (W2[0] * d3) * a1 * (1 - a1)
+dW1 = np.outer(d1, x); db1 = d1
+
+print(a1, a3, L)
+print(dW1)
+
+# 对 W1[0,0] 做中心差分检查
+eps = 1e-5
+def loss_at(w):
+    W = W1.copy(); W[0, 0] = w
+    h = sigmoid(W @ x + b1)
+    o = sigmoid((W2 @ h + b3)[0])
+    return 0.5 * (o - t) ** 2
+
+num = (loss_at(W1[0, 0] + eps) - loss_at(W1[0, 0] - eps)) / (2 * eps)
+print(num, dW1[0, 0])</code></pre>
+  </div>
+  <p>反向传播之所以快,是因为它把整张计算图上的局部导数各用了一次。前向要算多少条边,反向大致也要算多少条边,总成本是参数数量的线性函数。假设网络有 13,002 个参数:用中心差分逐个检查,每个参数要 2 次前向,总共 26,004 次前向;反向传播先做 1 次前向,再做 1 次反向,反向的计算量约为前向的 1 到 2 倍,合计大约相当于 2 到 3 次前向。前者约是后者的 13,002 倍;按 3 次前向算,也有 8,668 倍。</p>
+  <p>代价是内存。反向传播必须保存前向的中间激活,层数越深、批量越大,占用的显存越多。这也是为什么训练大模型时激活占用的显存常常比权重还大,以及为什么会有梯度检查点(gradient checkpointing)这类用计算换内存的技术:不保存全部激活,需要时再重算一部分。反向传播从来不是“免费”的,它只是把求导的成本从“每个参数两次前向”降到了“一次前向加一次反向”。</p>
+  <p>最后再强调一次边界:反向传播负责把 ∂L/∂θ 算出来,至于拿这个梯度走多大一步、用 SGD 还是 Adam、要不要加动量,都是优化器的事。把这三件事混在一起,就会得出“反向传播会自己学习”的错误结论。</p>
+
+  <div class="quiz" data-id="q-05-2">
+    <p class="q">一个网络有 13,002 个参数。用中心差分逐个检查全部参数,需要多少次前向传播?一次反向传播大约相当于多少次前向?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="中心差分每个参数要算 L(θ+ε) 和 L(θ−ε),是 2 次前向,不是 1 次;反向传播也要先做 1 次前向再反向,总量约 2 到 3 次前向。">13,002 次;1 次。</button>
+      <button class="opt" data-k="B" data-ok data-why="13,002 个参数 × 2 次前向 = 26,004 次。反向传播一次前向后,一次反向就能得到全部梯度,总成本约为 2 到 3 次前向。">26,004 次;约 2 到 3 次。</button>
+      <button class="opt" data-k="C" data-why="反向传播不是逐个参数跑前向。一次反向会沿计算图把全部 13,002 个梯度一起算出来,成本与参数数量同阶,约等于 2 到 3 次前向。">26,004 次;13,002 次。</button>
+      <button class="opt" data-k="D" data-why="13,002 是单侧差分每个参数只做一次前向的次数;中心差分每个参数要两次,所以是 26,004 次。">13,002 次;2 次。</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">5.5</span>交互一:3-2-1 网络的每一步</h3>
+  <p>下面的网络是 3-2-1:三个输入、两个 sigmoid 隐藏神经元、一个 sigmoid 输出,损失用平方损失。权重固定,但 x<sub>1</sub>、x<sub>2</sub>、x<sub>3</sub> 和目标 t 都能拖。载入时已经完整跑完一次前向和反向,所有数字都在表里;点“前向一步”会从第一层开始重新点亮,点“反向一步”会从 δ<sub>3</sub> 开始逐个显示 δ 和每个 ∂L/∂w。</p>
+  <div class="demo" id="d-05-steps">
+    <div class="demo-bar"><span class="live">交互</span><span>3-2-1 网络:逐步前向与反向</span><span class="sp"></span><span class="tag">数字随输入实算</span></div>
+    <div class="demo-body">
+      <div class="canvas-wrap"><canvas id="cv-05-steps" height="270"></canvas></div>
+      <div class="controls">
+        <div class="ctl"><label for="r-05-x1">输入 x1 <output id="o-05-x1">1.00</output></label><input id="r-05-x1" type="range" min="-1" max="1" step="0.05" value="1"></div>
+        <div class="ctl"><label for="r-05-x2">输入 x2 <output id="o-05-x2">0.50</output></label><input id="r-05-x2" type="range" min="-1" max="1" step="0.05" value="0.5"></div>
+        <div class="ctl"><label for="r-05-x3">输入 x3 <output id="o-05-x3">0.20</output></label><input id="r-05-x3" type="range" min="-1" max="1" step="0.05" value="0.2"></div>
+        <div class="ctl"><label for="r-05-t">目标 t <output id="o-05-t">1.00</output></label><input id="r-05-t" type="range" min="0" max="1" step="0.05" value="1"></div>
+        <button class="btn primary" id="b-05-fwd">前向一步</button>
+        <button class="btn" id="b-05-bwd">反向一步</button>
+        <button class="btn ghost" id="b-05-all">完整一遍</button>
+      </div>
+      <div class="grid-2">
+        <div class="card"><div class="card-h">前向:z 与 a</div><div id="d-05-fwd-table"></div></div>
+        <div class="card"><div class="card-h">反向:δ 与 ∂L/∂w</div><div id="d-05-bwd-table"></div></div>
+      </div>
+      <div class="legend"><span class="pill" id="d-05-status">前向 4/4 · 反向 4/4</span></div>
+    </div>
+    <div class="demo-hint">拖动输入会立刻重算并显示完整结果。点“前向一步”或“反向一步”会推进进度,走完后再点从头重放;反向表里的每一行都是当前权重和输入实算出来的。</div>
+  </div>
+  <p>先看 δ 的符号。输出 δ<sub>3</sub> 为负,说明把 z<sub>3</sub> 推大能降低损失;隐藏层第一个 δ 为负、第二个 δ 可能为正,取决于输出权重和各自斜率。表里每个梯度都能追溯到一行算式,没有一个数字是预先写死的。改变 x<sub>1</sub> 或 t,整张表会一起变,δ 和梯度也会跟着变号或变大变小。</p>
+
+  <h3><span class="h3-n">5.6</span>交互二:训练 2-2-1 拟合异或</h3>
+  <p>异或(XOR)的四个样本是 (0,0)→0、(0,1)→1、(1,0)→1、(1,1)→0。你找不到一条直线把两类点分开,所以单层感知机在这里必然失败。两个隐藏神经元够了:一个负责切出一个角,另一个负责切出对角,输出层把两块拼起来。这个演示固定 2-2-1:两个输入、两个 sigmoid 隐藏神经元、一个 sigmoid 输出。</p>
+  <p>损失用二元交叉熵 L = −[t ln a + (1−t) ln(1−a)]。它和 sigmoid 搭配时,输出层 δ = a − t,不用再乘 a(1−a);隐藏层的反向公式和 5.2 完全一样。四个样本一起算梯度,做全批量(full batch)更新,学习率固定 2.0。全批量下每更新一步都看完全部 4 个样本,所以一步也叫一轮(epoch)。初始权重由种子 4 生成,先跑 140 轮(即 140 次全批量更新),损失 0.1235,输出还没完全饱和。点“单步”做一次全批量更新;“自动训练”每帧跑 2 步,到 1,200 步自动停。</p>
+  <div class="demo" id="d-05-xor">
+    <div class="demo-bar"><span class="live">交互</span><span>2-2-1 拟合异或:权重热力图与损失</span><span class="sp"></span><span class="tag">单步 / 自动</span></div>
+    <div class="demo-body">
+      <div class="grid-2">
+        <div class="card"><div class="card-h">W1:输入到隐藏</div><div class="canvas-wrap"><canvas id="cv-05-w1" height="170"></canvas></div></div>
+        <div class="card"><div class="card-h">W2:隐藏到输出</div><div class="canvas-wrap"><canvas id="cv-05-w2" height="170"></canvas></div></div>
+      </div>
+      <div class="canvas-wrap"><canvas id="cv-05-loss" height="190"></canvas></div>
+      <div class="stat-row">
+        <div class="stat"><b id="d-05-xloss">0.1235</b><span>BCE 损失(4 个点)</span></div>
+        <div class="stat"><b id="d-05-xstep">140</b><span>全批量更新步数</span></div>
+        <div class="stat"><b id="d-05-xacc">100%</b><span>当前分类准确率</span></div>
+      </div>
+      <div class="legend" id="d-05-xout"></div>
+      <div class="controls">
+        <button class="btn" id="b-05-xstep">单步</button>
+        <button class="btn primary" id="b-05-xauto">自动训练</button>
+        <button class="btn ghost" id="b-05-xreset">重置</button>
+        <span class="tag">橙色为负,蓝色为正</span>
+      </div>
+    </div>
+    <div class="demo-hint">热力图每个格子是一个权重,越深绝对值越大;损失曲线记录每次全批量更新。初始状态已经训练 140 步,不是空白。</div>
+  </div>
+  <p>先盯住损失曲线:140 步时 0.1235,大约 200 步后落到 0.05 附近,400 步后接近 0.017,跑到 1,200 步时约 0.004。热力图里每个隐藏神经元对 x1 和 x2 的权重符号都相反,说明它学到的是 x2−x1 这条斜线;输出层再给两个神经元一正一负的权重,靠两者之差把异或的两个正类挑出来。继续训练时这些数值会继续变大,颜色深浅却不会一直加深,因为热力图每帧都按当前最大绝对值重新定色阶。单步几次,损失会平滑地单调下降:全批量更新每一步都用全部 4 个样本精确算梯度,即使异或的损失面是非凸的,这个例子里它也没有出现一次反弹。抖动要改用小批量(mini-batch)更新(每次随机抽一部分样本算梯度)才会出现。</p>
+
+  <div class="quiz" data-id="q-05-3">
+    <p class="q">5.2 中 w11 的梯度是 −0.014850,学习率 1.5。按 w11 ← w11 − η·∂L/∂w11,w11 从 0.500000 变成多少?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-ok data-why="0.500000 − 1.5×(−0.014850) = 0.500000 + 0.022275 = 0.522275。梯度为负,减去负数就是增加。">0.522275。</button>
+      <button class="opt" data-k="B" data-why="0.477725 相当于把负梯度当成正梯度去减,方向反了。梯度为负说明增大 w11 能降低损失,应该让 w11 变大。">0.477725。</button>
+      <button class="opt" data-k="C" data-why="只有学习率为 0 或梯度恰好为 0 时 w11 才不变;这里 η=1.5,梯度 −0.014850,两者都不为零。">0.500000。</button>
+      <button class="opt" data-k="D" data-why="0.485150 是把梯度直接加到权重上 (0.5 + (−0.01485)),这是梯度上升的写法;梯度下降的公式是减去梯度。">0.485150。</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">5.7</span>把这一章压缩成四句话</h3>
+  <p>前向传播把数据从左到右变成预测,再把预测和目标压成一个损失。反向传播从损失出发,把“损失对每个预激活 z 的敏感度”δ 一层层往回传:输出层用损失和激活的局部导数起头,隐藏层用下一层的 δ 乘权重、再乘本层激活斜率。每个权重梯度等于它的 δ 乘上它收到的输入,每个偏置梯度就是 δ 本身。一次反向得到全部参数的梯度,但改不改、改多少由优化器和学习率决定,所以反向传播只是求导的高效实现,不是学习本身。</p>
+  <p>如果你只记住一个数字,记住 5.2 里的 −0.014850:它是 w<sub>11</sub> 的梯度,也是链式法则走完四层后的结果。把这个数换成 13,002 个参数、几十层矩阵乘法,流程不变;把 sigmoid 换成 ReLU 或 GELU,局部斜率的形式变,反向的骨架不变。下一章会把这些梯度真正用来训练网络,并处理学习率、批量大小和过拟合(overfitting)。</p>
+
+  <div class="ch-foot">
+    <span class="state" data-state></span>
+    <span class="sp"></span>
+    <a class="btn" href="#ch-06-train">下一章 →</a>
+  </div>
+</section>
+
+<script>
+defineDemo('d-05-steps', function(root){
+  if(!window.NN){
+    if(!root.__ch05Wait){
+      root.__ch05Wait = true;
+      setTimeout(function(){ window.DEMOS['d-05-steps'](root); }, 30);
+    }
+    return;
+  }
+  const sig = function(z){ return 1/(1+Math.exp(-z)); };
+  const W1 = [[0.5,-0.3,0.8],[0.2,0.7,-0.4]];
+  const b1 = [0.1,-0.2];
+  const W2 = [0.6,-0.5];
+  const bOut = 0.15;
+  let fStep = 4, bStep = 4;
+
+  const cv = root.querySelector('#cv-05-steps');
+  const fHost = root.querySelector('#d-05-fwd-table');
+  const bHost = root.querySelector('#d-05-bwd-table');
+  const status = root.querySelector('#d-05-status');
+  const inX1 = root.querySelector('#r-05-x1');
+  const inX2 = root.querySelector('#r-05-x2');
+  const inX3 = root.querySelector('#r-05-x3');
+  const inT = root.querySelector('#r-05-t');
+  const outX1 = root.querySelector('#o-05-x1');
+  const outX2 = root.querySelector('#o-05-x2');
+  const outX3 = root.querySelector('#o-05-x3');
+  const outT = root.querySelector('#o-05-t');
+
+  function read(){
+    return {
+      x1: parseFloat(inX1.value),
+      x2: parseFloat(inX2.value),
+      x3: parseFloat(inX3.value),
+      t: parseFloat(inT.value)
+    };
+  }
+
+  function calc(){
+    const v = read();
+    const z1 = b1[0] + W1[0][0]*v.x1 + W1[0][1]*v.x2 + W1[0][2]*v.x3;
+    const z2 = b1[1] + W1[1][0]*v.x1 + W1[1][1]*v.x2 + W1[1][2]*v.x3;
+    const a1 = sig(z1), a2 = sig(z2);
+    const z3 = bOut + W2[0]*a1 + W2[1]*a2;
+    const a3 = sig(z3);
+    const L = 0.5*(a3-v.t)*(a3-v.t);
+    const d3 = (a3-v.t)*a3*(1-a3);
+    const dv1 = d3*a1, dv2 = d3*a2, dbOut = d3;
+    const d1 = d3*W2[0]*a1*(1-a1);
+    const d2 = d3*W2[1]*a2*(1-a2);
+    const dW1 = [[d1*v.x1,d1*v.x2,d1*v.x3],[d2*v.x1,d2*v.x2,d2*v.x3]];
+    return {v:v, z1:z1, z2:z2, z3:z3, a1:a1, a2:a2, a3:a3, L:L,
+            d3:d3, dv1:dv1, dv2:dv2, dbOut:dbOut, d1:d1, d2:d2, dW1:dW1,
+            db1:[d1,d2]};
+  }
+
+  function f(v,d){ return NN.fmt(v,d); }
+  function sgn(v,d){ return (v>=0?'+':'') + NN.fmt(v,d); }
+
+  function makeTable(head, rows){
+    const wrap = document.createElement('div');
+    wrap.className = 'tbl-wrap';
+    const table = document.createElement('table');
+    const thead = document.createElement('thead');
+    const trh = document.createElement('tr');
+    head.forEach(function(h){
+      const th = document.createElement('th');
+      th.textContent = h;
+      trh.appendChild(th);
+    });
+    thead.appendChild(trh);
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    rows.forEach(function(row){
+      const tr = document.createElement('tr');
+      row.forEach(function(cell, i){
+        const td = document.createElement('td');
+        if(i === row.length-1) td.className = 'num';
+        td.textContent = cell;
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    return wrap;
+  }
+
+  function renderTables(c){
+    const fRows = [];
+    if(fStep >= 1){
+      fRows.push(['z1', '0.10 + 0.50×'+f(c.v.x1,2)+' + (−0.30)×'+f(c.v.x2,2)+' + 0.80×'+f(c.v.x3,2), f(c.z1,4)]);
+      fRows.push(['z2', '−0.20 + 0.20×'+f(c.v.x1,2)+' + 0.70×'+f(c.v.x2,2)+' + (−0.40)×'+f(c.v.x3,2), f(c.z2,4)]);
+    }
+    if(fStep >= 2){
+      fRows.push(['a1', 'σ('+f(c.z1,4)+')', f(c.a1,6)]);
+      fRows.push(['a2', 'σ('+f(c.z2,4)+')', f(c.a2,6)]);
+    }
+    if(fStep >= 3){
+      fRows.push(['z3', '0.15 + 0.60×'+f(c.a1,4)+' + (−0.50)×'+f(c.a2,4), f(c.z3,4)]);
+    }
+    if(fStep >= 4){
+      fRows.push(['a3', 'σ('+f(c.z3,4)+')', f(c.a3,6)]);
+      fRows.push(['L', '0.5×('+f(c.a3,4)+'−'+f(c.v.t,2)+')²', f(c.L,6)]);
+    }
+    fHost.innerHTML = '';
+    if(fRows.length){
+      fHost.appendChild(makeTable(['量','算式','值'], fRows));
+    } else {
+      const p = document.createElement('p');
+      p.textContent = '点“前向一步”从 z1、z2 开始。';
+      fHost.appendChild(p);
+    }
+
+    const bRows = [];
+    if(bStep >= 1){
+      bRows.push(['δ3', '(a3−t)·a3(1−a3)', sgn(c.d3,6)]);
+    }
+    if(bStep >= 2){
+      bRows.push(['∂L/∂v1', 'δ3·a1 = '+f(c.d3,4)+'×'+f(c.a1,4), sgn(c.dv1,6)]);
+      bRows.push(['∂L/∂v2', 'δ3·a2 = '+f(c.d3,4)+'×'+f(c.a2,4), sgn(c.dv2,6)]);
+      bRows.push(['∂L/∂b3', 'δ3', sgn(c.dbOut,6)]);
+    }
+    if(bStep >= 3){
+      bRows.push(['δ1', 'δ3·v1·a1(1−a1)', sgn(c.d1,6)]);
+      bRows.push(['δ2', 'δ3·v2·a2(1−a2)', sgn(c.d2,6)]);
+    }
+    if(bStep >= 4){
+      bRows.push(['∂L/∂w11', 'δ1·x1', sgn(c.dW1[0][0],6)]);
+      bRows.push(['∂L/∂w12', 'δ1·x2', sgn(c.dW1[0][1],6)]);
+      bRows.push(['∂L/∂w13', 'δ1·x3', sgn(c.dW1[0][2],6)]);
+      bRows.push(['∂L/∂w21', 'δ2·x1', sgn(c.dW1[1][0],6)]);
+      bRows.push(['∂L/∂w22', 'δ2·x2', sgn(c.dW1[1][1],6)]);
+      bRows.push(['∂L/∂w23', 'δ2·x3', sgn(c.dW1[1][2],6)]);
+      bRows.push(['∂L/∂b1', 'δ1', sgn(c.db1[0],6)]);
+      bRows.push(['∂L/∂b2', 'δ2', sgn(c.db1[1],6)]);
+    }
+    bHost.innerHTML = '';
+    if(bRows.length){
+      bHost.appendChild(makeTable(['量','算式','值'], bRows));
+    } else {
+      const p = document.createElement('p');
+      p.textContent = '点“反向一步”从 δ3 开始。';
+      bHost.appendChild(p);
+    }
+    status.textContent = '前向 '+fStep+'/4 · 反向 '+bStep+'/4';
+  }
+
+  function draw(c){
+    const active = (fStep === 4 && bStep === 4) ? -1 : (bStep > 0 ? (bStep <= 2 ? 2 : 1) : (fStep <= 2 ? 1 : 2));
+    const res = NN.drawNet(cv, {
+      sizes:[3,2,1],
+      weights:[W1, [W2]],
+      showWeights:true,
+      activations:[[c.v.x1,c.v.x2,c.v.x3],[c.a1,c.a2],[c.a3]],
+      highlight: active >= 0 ? [active,0] : null,
+      height:270
+    });
+    const ctx = cv.getContext('2d');
+    const ink = NN.token('--ink2','#33475C');
+    const muted = NN.token('--muted','#68798C');
+    const accent2 = NN.token('--accent2','#C24A16');
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.font = '10px "Noto Sans SC", sans-serif';
+    ctx.fillStyle = muted;
+    ctx.fillText('输入 x', res.pos[0][0].x, 8);
+    ctx.fillText('隐藏 a', res.pos[1][0].x, 8);
+    ctx.fillText('输出 a', res.pos[2][0].x, 8);
+    ctx.font = '10px "JetBrains Mono", monospace';
+    ctx.fillStyle = ink;
+    res.pos[0].forEach(function(p,i){ ctx.fillText(['x1 ','x2 ','x3 '][i]+NN.fmt([c.v.x1,c.v.x2,c.v.x3][i],2), p.x, p.y+14); });
+    res.pos[1].forEach(function(p,i){ ctx.fillText('a'+NN.fmt([c.a1,c.a2][i],3), p.x, p.y+14); });
+    res.pos[2].forEach(function(p){ ctx.fillText('a '+NN.fmt(c.a3,3), p.x, p.y+14); });
+    if(active >= 0){
+      ctx.strokeStyle = accent2;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4,3]);
+      res.pos[active].forEach(function(p){
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 15, 0, Math.PI*2);
+        ctx.stroke();
+      });
+      ctx.setLineDash([]);
+    }
+  }
+
+  function render(){
+    const c = calc();
+    outX1.textContent = NN.fmt(c.v.x1,2);
+    outX2.textContent = NN.fmt(c.v.x2,2);
+    outX3.textContent = NN.fmt(c.v.x3,2);
+    outT.textContent = NN.fmt(c.v.t,2);
+    draw(c);
+    renderTables(c);
+  }
+
+  inX1.addEventListener('input', function(){ fStep = 4; bStep = 4; render(); });
+  inX2.addEventListener('input', function(){ fStep = 4; bStep = 4; render(); });
+  inX3.addEventListener('input', function(){ fStep = 4; bStep = 4; render(); });
+  inT.addEventListener('input', function(){ fStep = 4; bStep = 4; render(); });
+
+  root.querySelector('#b-05-fwd').addEventListener('click', function(){
+    if(fStep >= 4){ fStep = 0; bStep = 0; }
+    fStep = Math.min(4, fStep+1);
+    render();
+  });
+  root.querySelector('#b-05-bwd').addEventListener('click', function(){
+    fStep = 4;
+    if(bStep >= 4) bStep = 0;
+    bStep = Math.min(4, bStep+1);
+    render();
+  });
+  root.querySelector('#b-05-all').addEventListener('click', function(){
+    fStep = 4; bStep = 4; render();
+  });
+
+  const theme = window.Theme || (window.NN && window.NN.Theme);
+  if(theme && theme.on) theme.on(function(){ render(); });
+
+  render();
+});
+
+defineDemo('d-05-xor', function(root){
+  if(!window.NN){
+    if(!root.__ch05Wait){
+      root.__ch05Wait = true;
+      setTimeout(function(){ window.DEMOS['d-05-xor'](root); }, 30);
+    }
+    return;
+  }
+  const sig = function(z){ return 1/(1+Math.exp(-z)); };
+  const lr = 2.0;
+  const data = [[[0,0],0],[[0,1],1],[[1,0],1],[[1,1],0]];
+  let W1, b1, W2, b2, step, lossHist, running = false, ticker = null;
+
+  const w1cv = root.querySelector('#cv-05-w1');
+  const w2cv = root.querySelector('#cv-05-w2');
+  const lossCv = root.querySelector('#cv-05-loss');
+  const lossEl = root.querySelector('#d-05-xloss');
+  const stepEl = root.querySelector('#d-05-xstep');
+  const accEl = root.querySelector('#d-05-xacc');
+  const outEl = root.querySelector('#d-05-xout');
+  const autoBtn = root.querySelector('#b-05-xauto');
+  const stepBtn = root.querySelector('#b-05-xstep');
+  const resetBtn = root.querySelector('#b-05-xreset');
+
+  const plot = new NN.Plot(lossCv, {
+    xLabel:'更新步数', yLabel:'BCE 损失',
+    series:[{name:'损失', color:'--c2', data:[]}],
+    height:190, yRange:[0,0.85], xRange:[0,200], direct:false
+  });
+
+  function fresh(){
+    const rng = NN.mulberry32(4);
+    W1 = [[NN.randn(rng)*1.2, NN.randn(rng)*1.2],[NN.randn(rng)*1.2, NN.randn(rng)*1.2]];
+    b1 = [0,0];
+    W2 = [NN.randn(rng)*1.2, NN.randn(rng)*1.2];
+    b2 = 0;
+    step = 0;
+    lossHist = [];
+  }
+
+  function forward(x){
+    const z1 = [b1[0]+W1[0][0]*x[0]+W1[0][1]*x[1], b1[1]+W1[1][0]*x[0]+W1[1][1]*x[1]];
+    const a1 = [sig(z1[0]), sig(z1[1])];
+    const z2 = b2+W2[0]*a1[0]+W2[1]*a1[1];
+    return {a1:a1, y:sig(z2)};
+  }
+
+  function lossOf(){
+    let s = 0;
+    for(let k=0;k<data.length;k++){
+      const p = Math.min(1-1e-12, Math.max(1e-12, forward(data[k][0]).y));
+      const t = data[k][1];
+      s += -t*Math.log(p) - (1-t)*Math.log(1-p);
+    }
+    return s/data.length;
+  }
+
+  function accuracy(){
+    let ok = 0;
+    for(let k=0;k<data.length;k++){
+      const y = forward(data[k][0]).y;
+      if((y >= 0.5 ? 1 : 0) === data[k][1]) ok++;
+    }
+    return ok/data.length;
+  }
+
+  function trainOne(){
+    const gW1 = [[0,0],[0,0]];
+    const gb1 = [0,0];
+    const gW2 = [0,0];
+    let gb2 = 0;
+    for(let k=0;k<data.length;k++){
+      const x = data[k][0], t = data[k][1];
+      const z1 = [b1[0]+W1[0][0]*x[0]+W1[0][1]*x[1], b1[1]+W1[1][0]*x[0]+W1[1][1]*x[1]];
+      const a1 = [sig(z1[0]), sig(z1[1])];
+      const z2 = b2+W2[0]*a1[0]+W2[1]*a1[1];
+      const a2 = sig(z2);
+      const d2 = a2 - t;
+      gW2[0] += d2*a1[0]; gW2[1] += d2*a1[1]; gb2 += d2;
+      const d1 = [d2*W2[0]*a1[0]*(1-a1[0]), d2*W2[1]*a1[1]*(1-a1[1])];
+      gW1[0][0] += d1[0]*x[0]; gW1[0][1] += d1[0]*x[1]; gb1[0] += d1[0];
+      gW1[1][0] += d1[1]*x[0]; gW1[1][1] += d1[1]*x[1]; gb1[1] += d1[1];
+    }
+    const n = data.length;
+    for(let i=0;i<2;i++) for(let j=0;j<2;j++) W1[i][j] -= lr*gW1[i][j]/n;
+    for(let i=0;i<2;i++) b1[i] -= lr*gb1[i]/n;
+    for(let i=0;i<2;i++) W2[i] -= lr*gW2[i]/n;
+    b2 -= lr*gb2/n;
+    step++;
+    lossHist.push([step, lossOf()]);
+  }
+
+  function drawHeat(){
+    const flat1 = W1[0].concat(W1[1]);
+    const m1 = Math.max(1e-6, Math.abs(flat1[0]), Math.abs(flat1[1]), Math.abs(flat1[2]), Math.abs(flat1[3]));
+    NN.drawMatrix(w1cv, {
+      data:W1, diverging:true, min:-m1, max:m1,
+      rowLabels:['h1','h2'], colLabels:['x1','x2'],
+      showVals:true, cell:52, lo:'--c2', mid:'--surface2', hi:'--c1'
+    });
+    const m2 = Math.max(1e-6, Math.abs(W2[0]), Math.abs(W2[1]));
+    NN.drawMatrix(w2cv, {
+      data:[W2], diverging:true, min:-m2, max:m2,
+      rowLabels:['y'], colLabels:['h1','h2'],
+      showVals:true, cell:52, lo:'--c2', mid:'--surface2', hi:'--c1'
+    });
+  }
+
+  function render(){
+    const loss = lossOf();
+    lossEl.textContent = NN.fmt(loss,4);
+    stepEl.textContent = String(step);
+    accEl.textContent = Math.round(accuracy()*100)+'%';
+    outEl.innerHTML = '';
+    ['00','01','10','11'].forEach(function(name, i){
+      const span = document.createElement('span');
+      span.textContent = name+' → '+NN.fmt(forward(data[i][0]).y,3);
+      outEl.appendChild(span);
+    });
+    drawHeat();
+    plot.set({
+      series:[{name:'损失', color:'--c2', data:lossHist.slice()}],
+      xRange:[0, Math.max(200, step+20)]
+    });
+  }
+
+  function stopAuto(){
+    running = false;
+    if(ticker){ ticker.stop(); ticker = null; }
+    if(!autoBtn.disabled) autoBtn.textContent = '自动训练';
+  }
+
+  function startAuto(){
+    if(autoBtn.disabled) return;
+    if(running){ stopAuto(); return; }
+    running = true;
+    autoBtn.textContent = '暂停';
+    ticker = NN.createTicker(root, function(){
+      if(!running) return;
+      for(let k=0;k<2;k++) trainOne();
+      render();
+      if(step >= 1200){
+        stopAuto();
+        autoBtn.disabled = true;
+        autoBtn.textContent = '已到 1,200 步';
+      }
+    });
+    ticker.start();
+  }
+
+  function reset(){
+    stopAuto();
+    autoBtn.disabled = false;
+    autoBtn.textContent = '自动训练';
+    fresh();
+    for(let i=0;i<140;i++) trainOne();
+    render();
+  }
+
+  stepBtn.addEventListener('click', function(){
+    stopAuto();
+    trainOne();
+    render();
+  });
+  autoBtn.addEventListener('click', startAuto);
+  resetBtn.addEventListener('click', reset);
+
+  const theme = window.Theme || (window.NN && window.NN.Theme);
+  if(theme && theme.on) theme.on(function(){ drawHeat(); });
+
+  fresh();
+  for(let i=0;i<140;i++) trainOne();
+  render();
+});
+</script>

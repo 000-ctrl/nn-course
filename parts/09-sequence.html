@@ -1,0 +1,431 @@
+<section class="ch" id="ch-09-sequence" data-num="09" data-title="循环网络">
+  <header class="ch-head">
+    <div class="ch-eyebrow"><span class="dot"></span>第 09 章 · 序列</div>
+    <h1 class="ch-title">循环网络</h1>
+    <p class="ch-sub">当顺序本身携带信息,网络必须学会记住刚刚看过什么。</p>
+    <div class="ch-rule"></div>
+  </header>
+
+  <div class="prereq"><b>读前</b><span>第 2 章矩阵形状(2.2、2.3)、第 4 章全连接层、第 5 章反向传播、第 6.6 节梯度消失;不依赖第 8 章卷积</span><b>可跳过</b><span>9.7 的 PyTorch 代码与参数手算可跳过,不影响 9.3—9.6 的主线</span></div>
+
+  <p class="lead">前面的网络把每个输入当作互不相关的样本:一张图、一行特征。可语言、语音、股价、心电图都是序列(sequence),第 3 个字的意思取决于前 2 个字。本章从最朴素的循环网络(recurrent neural network)讲起,一直讲到它为什么被注意力(attention)取代。</p>
+
+  <h3><span class="h3-n">9.1</span>顺序就是信息</h3>
+  <p>把「我打你」三个字打乱成「你我打」,字一个没少,意思却没了。序列数据和普通表格的差别不在元素本身,而在元素之间的排列。它有三个必须正面处理的性质:长度可变、顺序敏感、存在长程依赖。</p>
+  <ul class="list">
+    <li><strong>长度可变。</strong>一句话 3 个字,一段话 3000 个字。网络不能假设输入永远是固定长度。</li>
+    <li><strong>顺序敏感。</strong>交换两个元素会改变含义,甚至直接改变标签。</li>
+    <li><strong>长程依赖。</strong>第 100 个词可能指代第 3 个词出现的实体,中间隔了 97 个词。</li>
+  </ul>
+  <p>具体感受一下长度:16 kHz 采样率的 10 秒音频是 160,000 个采样点;一篇 800 字的文章按字切分是 800 个 token(token);同一篇文章按词切分大约 500 个 token。处理它们的网络必须能在几百到几十万个时间步上工作。</p>
+  <p>如果把每个时间点单独喂给第 4 章的全连接网络,会发生什么?同一个字,不管前面出现过什么,得到的输出完全一样。它没有记忆。要让输出依赖历史,网络需要一个随位置更新的内部状态。另一个关键决定是共享参数(parameter sharing):识别「昨天」是时间词的能力,不应该在位置 1 和位置 2 各学一遍。一个长 100 步的序列如果每步用一套独立权重,就需要 100 套;循环网络只保留一套,在每个时间步重复使用。这既省参数,也让在短序列上学到的模式能迁移到长序列。</p>
+
+  <h3><span class="h3-n">9.2</span>隐藏状态:一句被压缩的笔记</h3>
+  <p>循环神经网络(recurrent neural network,RNN)的做法只有一句话:把上一步的隐藏状态(hidden state)和这一步的输入放在一起,算出新的隐藏状态。</p>
+  <div class="math"><var>h</var><sub>t</sub> = tanh(<var>W</var><sub>xh</sub> <var>x</var><sub>t</sub> + <var>W</var><sub>hh</sub> <var>h</var><sub>t−1</sub> + <var>b</var><sub>h</sub>)<br><var>y</var><sub>t</sub> = <var>W</var><sub>hy</sub> <var>h</var><sub>t</sub> + <var>b</var><sub>y</sub></div>
+  <p><var>x</var><sub>t</sub> 是第 t 步的输入向量,<var>h</var><sub>t</sub> 是第 t 步的隐藏状态。按第 2 章的约定,单样本写成 <var>Wx</var> + <var>b</var>,矩阵乘在左边:第 2.2 节把 <code>Wx</code> 读成「每一行与输入做一次点积」,第 2.3 节把一批样本摞成矩阵。这里 <var>x</var><sub>t</sub> 的形状是 5000×1,<var>W</var><sub>xh</sub> 是 128×5000,把输入映射进隐藏空间;<var>W</var><sub>hh</sub> 是 128×128,把上一步的记忆带进来。两者相加后过 tanh,把每个分量压到 −1 到 1 之间。一次处理 B 条序列时,把每个时间步的输入摞成 (<var>B</var>, 5000) 的 <var>X</var>,批量形式就是 <var>XW</var><sub>xh</sub><sup>T</sup> + <var>b</var>,每一行是一个样本的新状态。</p>
+  <p>隐藏状态就是网络的记忆。假设词表 5000、隐藏维度 128:<var>W</var><sub>xh</sub> 是 128×5000 的矩阵,640,000 个参数;<var>W</var><sub>hh</sub> 是 128×128,16,384 个;<var>W</var><sub>hy</sub> 是 5000×128,640,000 个;再加上偏置,一共 1,301,512 个参数。注意这个数字和序列长度无关:处理 10 个词和处理 10,000 个词,用的是同一套 130 万个参数。</p>
+  <div class="callout key"><b>核心</b>隐藏状态不是录像带。它是一个固定长度的向量。上面的例子里,不管读了多少内容,记忆永远只有 128 个数。读一本 10 万字的小说和读一句话,占用的记忆一样大。信息必须被有损压缩——这正是后面所有困难的根源。</div>
+  <p><var>h</var><sub>0</sub> 通常初始化为全零。每读一个 token,就覆盖一次 <var>h</var>。上一次的记忆不会原样保留,它被矩阵乘法和 tanh 揉进了新的向量里。</p>
+
+  <h3><span class="h3-n">9.3</span>按时间展开的计算图</h3>
+  <p>把循环按时间画开,RNN 就变成一个很深的前馈网络:第 t 层把第 t−1 层的输出和当前输入一起作为输入。这个图叫按时间展开的计算图(unrolled computational graph)。所有层共享同一组 <var>W</var><sub>xh</sub>、<var>W</var><sub>hh</sub>、<var>W</var><sub>hy</sub>。</p>
+  <p>训练用反向传播的变体,叫沿时间反向传播(backpropagation through time,BPTT)。设 <var>z</var><sub>t</sub> = <var>W</var><sub>xh</sub> <var>x</var><sub>t</sub> + <var>W</var><sub>hh</sub> <var>h</var><sub>t−1</sub> + <var>b</var><sub>h</sub> 是 tanh 之前的输入,那么从第 t−1 步到第 t 步的雅可比矩阵(Jacobian)是:</p>
+  <div class="math">∂<var>h</var><sub>t</sub>/∂<var>h</var><sub>t−1</sub> = diag(1 − tanh²(<var>z</var><sub>t</sub>)) <var>W</var><sub>hh</sub></div>
+  <p>∂ 读作偏导(partial derivative),diag 是对角矩阵(diagonal matrix)。梯度沿时间回传,每退一步就左乘这个雅可比的转置 <var>J</var><sub>t</sub><sup>T</sup>。从第 T 步一路代回第 1 步,∂<var>L</var>/∂<var>h</var><sub>1</sub> 就是 T−1 个 <var>J</var><sub>t</sub><sup>T</sup> 的连乘。diag 那一项是 tanh 的导数,最大为 1,饱和时接近 0;<var>W</var><sub>hh</sub> 的特征值(eigenvalue,矩阵在某方向上的缩放倍数)决定记忆被放大还是缩小。</p>
+  <p>这个连乘的后果,第 6.6 节已经算过:每步的因子略小于 1,乘积就随步数指数衰减;略大于 1,就指数放大。RNN 不需要重算一遍,只需要注意两件事。第一,因子不是标量,而是「tanh 导数 × 同一个 <var>W</var><sub>hh</sub>」;tanh 一饱和,导数接近 0,再大的 <var>W</var><sub>hh</sub> 也救不回来。第二,每一步乘的是同一个矩阵,同一组特征值被沿时间反复使用 T 次,序列越长,衰减或放大越极端。这就是梯度消失(vanishing gradient)与梯度爆炸(exploding gradient)在循环网络里的具体形态。</p>
+
+  <p>实践中对付爆炸靠梯度裁剪(gradient clipping):把整个梯度向量的范数限制在 1.0 以内。对付消失则要靠结构改动,也就是下一节的门控。普通 RNN 在实践中的有效记忆通常只有 10 到 20 步,超过这个范围,远处的信息就学不进去了。</p>
+
+  <h3><span class="h3-n">9.4</span>LSTM 与 GRU:给记忆装上门</h3>
+  <p>长短期记忆网络(long short-term memory,LSTM)在 1997 年提出,核心是把状态拆成两条:隐藏状态 <var>h</var><sub>t</sub> 和细胞状态(cell state)<var>c</var><sub>t</sub>。<var>c</var><sub>t</sub> 像一条传送带,信息可以几乎不变地沿着它向前走。三个门(gate)控制谁上车、谁下车。</p>
+  <div class="math"><var>f</var><sub>t</sub> = σ(<var>W</var><sub>f</sub>[<var>h</var><sub>t−1</sub>, <var>x</var><sub>t</sub>] + <var>b</var><sub>f</sub>)<br><var>i</var><sub>t</sub> = σ(<var>W</var><sub>i</sub>[<var>h</var><sub>t−1</sub>, <var>x</var><sub>t</sub>] + <var>b</var><sub>i</sub>)<br><var>c̃</var><sub>t</sub> = tanh(<var>W</var><sub>c</sub>[<var>h</var><sub>t−1</sub>, <var>x</var><sub>t</sub>] + <var>b</var><sub>c</sub>)<br><var>c</var><sub>t</sub> = <var>f</var><sub>t</sub> ⊙ <var>c</var><sub>t−1</sub> + <var>i</var><sub>t</sub> ⊙ <var>c̃</var><sub>t</sub><br><var>o</var><sub>t</sub> = σ(<var>W</var><sub>o</sub>[<var>h</var><sub>t−1</sub>, <var>x</var><sub>t</sub>] + <var>b</var><sub>o</sub>),&nbsp;&nbsp;<var>h</var><sub>t</sub> = <var>o</var><sub>t</sub> ⊙ tanh(<var>c</var><sub>t</sub>)</div>
+  <p>方括号表示两个向量首尾拼接(concatenation)。σ 是 sigmoid,输出 0 到 1。遗忘门(forget gate)<var>f</var><sub>t</sub> 决定旧记忆保留多少:接近 1 就原样保留,接近 0 就清空。输入门(input gate)<var>i</var><sub>t</sub> 决定新信息写入多少。输出门(output gate)<var>o</var><sub>t</sub> 决定当前细胞状态有多少暴露给 <var>h</var><sub>t</sub>。⊙ 是逐元素相乘。</p>
+  <p>关键在第四行:<var>c</var><sub>t</sub> 是加法。反向传播时,梯度沿细胞状态回传只需要乘遗忘门,∂<var>c</var><sub>t</sub>/∂<var>c</var><sub>t−1</sub> = <var>f</var><sub>t</sub>。如果网络学到 <var>f</var><sub>t</sub>=0.99,1000 步后梯度还有 0.99<sup>1000</sup> ≈ 4.3×10<sup>−5</sup>;普通 RNN 若每步 0.9,1000 步后是 10<sup>−46</sup>,早就没有任何信号。遗忘门接近 1 时,这条路径近似恒等映射,梯度可以畅通地穿过几百步。</p>
+  <p>门控循环单元(gated recurrent unit,GRU)是 2014 年的简化版。它把细胞状态和隐藏状态合并,只用两个门:重置门(reset gate)<var>r</var><sub>t</sub> 和更新门(update gate)<var>z</var><sub>t</sub>。</p>
+  <div class="math"><var>r</var><sub>t</sub> = σ(<var>W</var><sub>r</sub>[<var>h</var><sub>t−1</sub>, <var>x</var><sub>t</sub>] + <var>b</var><sub>r</sub>)<br><var>z</var><sub>t</sub> = σ(<var>W</var><sub>z</sub>[<var>h</var><sub>t−1</sub>, <var>x</var><sub>t</sub>] + <var>b</var><sub>z</sub>)<br><var>h̃</var><sub>t</sub> = tanh(<var>W</var><sub>h</sub>[<var>r</var><sub>t</sub> ⊙ <var>h</var><sub>t−1</sub>, <var>x</var><sub>t</sub>] + <var>b</var><sub>h</sub>)<br><var>h</var><sub>t</sub> = (1 − <var>z</var><sub>t</sub>) ⊙ <var>h</var><sub>t−1</sub> + <var>z</var><sub>t</sub> ⊙ <var>h̃</var><sub>t</sub></div>
+  <p>更新门直接在旧状态和新候选之间做插值。GRU 的参数比 LSTM 少:输入 128 维、隐藏 128 维时,LSTM 有 4 组门矩阵共 131,584 个参数,GRU 只有 3 组共 98,688 个,少 25%。在多数任务上两者效果接近,GRU 训练更快,LSTM 在需要精确计数的长序列上有时更稳。</p>
+
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>模型</th><th>状态</th><th>门</th><th>参数量(输入 128、隐藏 128)</th><th>有效记忆</th></tr></thead>
+    <tbody>
+      <tr><td>RNN</td><td>h</td><td>无</td><td class="num">33,024</td><td>约 10—20 步</td></tr>
+      <tr><td>LSTM</td><td>h、c</td><td>遗忘、输入、输出</td><td class="num">131,584</td><td>约数百步</td></tr>
+      <tr><td>GRU</td><td>h</td><td>重置、更新</td><td class="num">98,688</td><td>约数百步</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="callout warn"><b>常见误解</b>「LSTM 解决了梯度消失,所以它能记住任意长的依赖。」门控只是缓解,不是消除。遗忘门是学出来的,大多数时候略小于 1:0.99 的遗忘门在 1000 步后只剩 4.3×10<sup>−5</sup>,0.95 在 1000 步后只剩 5.3×10<sup>−23</sup>。而且固定 128 维的细胞状态本身也装不下任意多信息。LSTM 把可用记忆从十几步推到几百步,但没有推到无限。</div>
+
+  <div class="quiz" data-id="q-09-1">
+    <p class="q">一个普通 RNN 在 200 步的序列上几乎学不到第 1 步的信息,最直接的原因是什么?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="128 维确实装不下 200 步的全部细节,但这不是最直接的原因。即使把维度加到 1024,梯度连乘的衰减仍然会让远处信息学不到。">隐藏状态只有 128 维,装不下 200 步的信息</button>
+      <button class="opt" data-k="B" data-ok data-why="正确。BPTT 的梯度是 200 个雅可比矩阵的连乘,每个因子的谱范数小于 1 时,乘积随步数指数衰减;0.9 的 200 次方约 7×10⁻¹⁰,更新量已经小到没有意义。">反向传播要连乘 200 个雅可比矩阵,梯度指数衰减到接近 0</button>
+      <button class="opt" data-k="C" data-why="RNN 的参数跨时间共享,通常比同样深度的 MLP 少得多,过拟合不是长程依赖失效的原因。">RNN 的参数比 CNN 多,模型过拟合了</button>
+      <button class="opt" data-k="D" data-why="tanh 的输出范围是 −1 到 1,包含正数和负数。真正的问题是它在两端饱和、导数接近 0,而不是只能输出负数。">tanh 让隐藏状态只能取负值</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <div class="demo" id="d-09-hidden">
+    <div class="demo-bar"><span class="live">交互</span><span>逐字读入「神经网络」时的隐藏状态</span><span class="sp"></span><span class="tag">单步 / 回退</span></div>
+    <div class="demo-body">
+      <div class="canvas-wrap"><canvas id="cv-09-unroll" height="236"></canvas></div>
+      <div class="grid-2">
+        <div>
+          <div class="card-h">隐藏状态 h_t · 4 维</div>
+          <div class="canvas-wrap"><canvas id="cv-09-hstate"></canvas></div>
+        </div>
+        <div>
+          <div class="card-h">下一步字符概率</div>
+          <div class="canvas-wrap"><canvas id="cv-09-out"></canvas></div>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div>
+          <div class="card-h">输入权重 W_xh(5 字 × 4 维)</div>
+          <div class="canvas-wrap"><canvas id="cv-09-wx"></canvas></div>
+        </div>
+        <div>
+          <div class="card-h">输出权重 W_hy(5 字 × 4 维)</div>
+          <div class="canvas-wrap"><canvas id="cv-09-wy"></canvas></div>
+        </div>
+      </div>
+      <div class="controls">
+        <button class="btn" id="b-09-prev">上一步</button>
+        <button class="btn primary" id="b-09-next">下一步</button>
+        <button class="btn" id="b-09-play">自动播放</button>
+        <button class="btn" id="b-09-reset">重置</button>
+      </div>
+      <p><span class="pill" id="o-09-step">已读入 2 / 4 个字 · 当前预测:网 71%</span></p>
+    </div>
+    <div class="demo-hint">这个 4 维隐藏状态由一套手写的 4×4 循环权重驱动。点「下一步」看新字如何覆盖旧记忆;点「上一步」可以回到前一步,对比同一维度里哪些数被保留、哪些被冲淡。</div>
+  </div>
+
+  <h3><span class="h3-n">9.5</span>序列到序列</h3>
+  <p>把两个 RNN 首尾接起来,就得到序列到序列(sequence-to-sequence,seq2seq)模型。编码器(encoder)读入源序列,最后一个隐藏状态作为上下文向量(context vector);解码器(decoder)从这个向量出发,一个 token 一个 token 地生成目标序列。</p>
+  <div class="math"><var>p</var>(<var>y</var><sub>1</sub>,…,<var>y</var><sub>M</sub> | <var>x</var><sub>1</sub>,…,<var>x</var><sub>T</sub>) = ∏<sub>t=1</sub><sup>M</sup> <var>p</var>(<var>y</var><sub>t</sub> | <var>y</var><sub>1</sub>,…,<var>y</var><sub>t−1</sub>, <var>c</var>)</div>
+  <p>∏ 是连乘(product);这里的 <var>c</var> 是上下文向量(context vector),与 9.4 的细胞状态同名不同物。训练时解码器每一步的输入是上一个正确 token(teacher forcing),推理时换成自己上一步的输出。2014 年 Sutskever 等人的英法翻译模型用了 4 层 LSTM、每层 1000 个单元,在当时的 WMT 数据上把 BLEU 推到 30 以上。</p>
+  <p>瓶颈很快暴露:不管源句多长,编码器只交出一个固定向量。若它是 512 维,翻一个 30 词的句子,平均每个词只分到 17 个数。句子到 50 词、80 词,细节被挤掉,BLEU 随长度明显下滑。解码器没有能力回头查原文,只能凭这个被压缩的摘要回忆。</p>
+
+  <h3><span class="h3-n">9.6</span>注意力为什么赢了</h3>
+  <p>注意力(attention)在 2014 年由 Bahdanau 等人引入翻译。做法是让解码器每一步都回头看编码器的全部隐藏状态,而不是只看最后一个。解码器当前状态和每个编码器状态算一个分数,softmax 归一化成权重,再对所有状态加权求和,得到一个专门为当前步定制的上下文向量。</p>
+  <div class="math"><var>α</var><sub>t,s</sub> = softmax<sub>s</sub>(score(<var>h</var><sub>t</sub>, <var>s</var><sub>s</sub>)),&nbsp;&nbsp;<var>c</var><sub>t</sub> = Σ<sub>s</sub> <var>α</var><sub>t,s</sub> <var>s</var><sub>s</sub></div>
+  <p>Σ 是求和(sum);score 是打分函数(score function),给匹配度打分。这一步把固定长度的瓶颈换成了可变长度的查表:源句 5 个词就查 5 个位置,50 个词就查 50 个。解码器在生成每个词时,可以重点看它需要的那几个源词。</p>
+  <p>2017 年的 Transformer 更进一步,干脆去掉循环,只用自注意力(self-attention)。基础版是 6 层、512 维、8 个注意力头。所有位置可以同时计算,一个 1000 token 的序列不再需要 1000 次串行矩阵乘法;代价是注意力矩阵有 1000×1000 = 100 万个分数,计算量随长度平方增长。</p>
+  <p>这就是注意力取代循环的两个理由。其一,路径短:信息从第 1 个位置到第 1000 个位置,RNN 要经过 1000 次状态更新,注意力只要 1 层。其二,可并行:RNN 的第 t 步必须等第 t−1 步算完,GPU 的几千个核心大部分时间在等;注意力把所有位置放进一个大矩阵乘法,正好喂饱 GPU。</p>
+  <p>循环网络没有消失。流式语音识别、传感器信号、边缘设备上的小模型仍然爱用它:每来一个新样本,只需一次常数时间 O(1) 的状态更新和固定大小的内存,不需要保存全部历史。选择取决于约束,而不是谁更新。</p>
+
+  <div class="quiz" data-id="q-09-2">
+    <p class="q">LSTM 相比普通 RNN 能记住更久,关键机制是什么?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="LSTM 多出的是细胞状态和三个门,不是把隐藏维度简单加倍。在隐藏维度相同的情况下,它依然比普通 RNN 更擅长保留长程信息。">它把隐藏状态的维度加倍,所以能存更多数</button>
+      <button class="opt" data-k="B" data-ok data-why="正确。细胞状态的更新是 c_t = f_t ⊙ c_{t−1} + i_t ⊙ c̃_t,梯度沿这条路径回传时只乘遗忘门。遗忘门接近 1,整条路径接近恒等映射,梯度不会像 W_hh 连乘那样指数衰减。">细胞状态走加法更新,梯度回传时只乘遗忘门,接近恒等路径</button>
+      <button class="opt" data-k="C" data-why="LSTM 仍然用 tanh 生成候选记忆和输出,饱和问题没有消失。它靠的是加法路径和门控,而不是去掉 tanh。">它去掉了 tanh,所以永远不会饱和</button>
+      <button class="opt" data-k="D" data-why="每个时间步重新初始化隐藏状态会清空记忆,效果正好相反。LSTM 恰恰是把状态跨时间携带下去。">它每个时间步都重新初始化隐藏状态</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">9.7</span>把一个小模型跑起来</h3>
+  <p>如果你要自己训练一个字符级语言模型,下面这段 PyTorch 代码是一个能跑的最小骨架。它每个小批量(mini-batch)读入 32 条长度 35 的 token 序列,用前 35 个 token 预测后 35 个,并把梯度范数裁剪到 1.0。</p>
+  <div class="code-wrap"><div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div><pre class="code"><code>import torch, torch.nn as nn
+
+vocab, emb, hid = 5000, 64, 128
+
+class CharRNN(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.emb = nn.Embedding(vocab, emb)
+        self.rnn = nn.LSTM(emb, hid, num_layers=2, batch_first=True)
+        self.head = nn.Linear(hid, vocab)
+
+    def forward(self, x, h=None):
+        e = self.emb(x)                 # (B, T, 64)
+        out, h = self.rnn(e, h)         # (B, T, 128)
+        return self.head(out), h        # (B, T, 5000)
+
+model = CharRNN()
+opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+lossf = nn.CrossEntropyLoss()
+
+batch = torch.randint(0, vocab, (32, 36))
+x, y = batch[:, :-1], batch[:, 1:]  # 用前 35 个预测后 35 个
+
+for step in range(200):
+    logits, _ = model(x)
+    loss = lossf(logits.reshape(-1, vocab), y.reshape(-1))
+    opt.zero_grad()
+    loss.backward()
+    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    opt.step()
+
+print(sum(p.numel() for p in model.parameters()))  # 1196424</code></pre></div>
+  <p>这段模型的实际参数量是 1,196,424:词嵌入 5000×64 = 320,000,两层 LSTM 共 231,424,输出层 128×5000+5000 = 645,000。在单张消费级显卡上,这个规模每秒能处理几千个 token。</p>
+  <p>几条能省掉几小时调试时间的经验:序列按长度分桶(bucketing),别让一个小批量(mini-batch)里最长的序列把其余都 padding 到很长;用截断的 BPTT,每 35 步回传一次,否则显存随序列长度线性增长;学习率从 1e-3 的 Adam 开始;监控梯度范数,长期低于 1e-4 说明梯度消失,长期高于 10 说明需要更强的裁剪。真实训练时,把所有训练序列完整过一遍叫一轮(epoch);上面为了骨架最短,只反复用同一个固定的小批量。</p>
+
+  <div class="callout tip"><b>先跑通再调结构</b>拿到一个新序列任务,先用上面的两层 LSTM 跑 200 步,确认损失能从 ln(5000) ≈ 8.52 降到 5 以下。如果降不下去,先检查输入和目标是否错开了一位,再检查 padding 是否被算进了损失。结构问题通常排在数据问题之后。</div>
+
+  <h3><span class="h3-n">9.8</span>字符预测:换个前缀,概率就变</h3>
+  <p>下面是一张预置的字符级概率表(4-gram 模型,用前 3 个字作上下文)。真实的小型 LSTM 会额外用隐藏状态记住更早的上下文,但「前缀决定下一个字」这件事是一样的。拖动温度滑块可以看到:温度低于 1 时分布变尖,高于 1 时分布变平。</p>
+
+  <div class="demo" id="d-09-next">
+    <div class="demo-bar"><span class="live">交互</span><span>给定前缀,下一个字是什么</span><span class="sp"></span><span class="tag">换前缀 / 调温度</span></div>
+    <div class="demo-body">
+      <div class="canvas-wrap"><canvas id="cv-09-pred" height="210"></canvas></div>
+      <div class="controls">
+        <div class="seg">
+          <button data-pre="人工智" aria-pressed="true">人工智</button>
+          <button data-pre="神经网" aria-pressed="false">神经网</button>
+          <button data-pre="机器学" aria-pressed="false">机器学</button>
+          <button data-pre="深度学" aria-pressed="false">深度学</button>
+        </div>
+        <div class="ctl"><label for="s-09-temp">温度 T <output id="o-09-temp">1.00</output></label>
+          <input id="s-09-temp" type="range" min="20" max="200" step="5" value="100"></div>
+      </div>
+      <p><span class="pill" id="o-09-arg">前缀「人工智」→ 最可能的下一个字:「能」 74.0%</span></p>
+    </div>
+    <div class="demo-hint">点四个前缀按钮,概率条会整体改写。「人工智」后面最可能是「能」,「神经网」后面最可能是「络」,「深度学」后面最可能是「习」。把温度拉到 0.2,第一名会接近 100%。</div>
+  </div>
+
+  <h3><span class="h3-n">9.9</span>局限与交接</h3>
+  <p>把 RNN 的局限压缩成三条。第一,串行:第 t 步依赖第 t−1 步,训练时无法在时间维度并行,序列多长就要等多久。第二,路径长:梯度从第 1000 步传回第 1 步要穿过 1000 次乘法,门控只能把衰减变慢,不能把路径变短。第三,状态定长:所有历史被压进一个向量,细节必然丢失,信息量有硬上限。注意力分别从这三个点切入:所有位置并行计算,任意两个位置之间只隔一层,并且直接访问全部历史而不是压缩后的摘要。</p>
+  <p>下一章会把注意力拆开:查询(query)、键(key)、值(value)分别是什么,一个注意力头怎样计算,为什么多个头能同时关注不同的关系。读完这一章,你已经知道循环网络为什么曾经是序列建模的默认答案,也知道它为什么把位置让了出来。</p>
+
+  <div class="quiz" data-id="q-09-3">
+    <p class="q">seq2seq 翻译模型把整句压成一个 512 维向量,句子变长后效果下降。注意力解决了什么?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="注意力没有把那个固定向量扩大到 5120 维,也没有替换它的维度。它改变的是解码器获取信息的方式:每一步直接看所有编码器状态。">把上下文向量从 512 维扩大到 5120 维,所以装得下</button>
+      <button class="opt" data-k="B" data-ok data-why="正确。解码器每一步对全部编码器位置打分并加权求和,得到随当前步变化的上下文向量。源句多长,可访问的位置就有多少,不再受单一固定向量的容量限制。">解码器每一步对所有编码器位置打分并加权求和,不再依赖单一固定向量</button>
+      <button class="opt" data-k="C" data-why="编码器仍然要逐步读入源句,循环步数没有减少。彻底去掉循环的是 Transformer,不是注意力机制本身。">它让 RNN 读入源句时的循环步数变少</button>
+      <button class="opt" data-k="D" data-why="缩小词表会减少输出类别,和「整句信息被压进一个固定向量」的瓶颈没有关系。">它把词表缩小,减少了输出类别的数量</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <div class="ch-foot">
+    <span class="state" data-state></span>
+    <span class="sp"></span>
+    <a class="btn" href="#ch-10-attention">下一章 →</a>
+  </div>
+</section>
+
+<script>
+defineDemo('d-09-hidden', function(root){
+  if(!window.NN){
+    root.__nnWait=(root.__nnWait||0)+1;
+    if(root.__nnWait<100) setTimeout(function(){ window.DEMOS['d-09-hidden'](root); },40);
+    return;
+  }
+  var chars=['神','经','网','络','学'];
+  var Wxh=[[1.40,0.15,0.05,0.00],[0.10,1.50,0.12,0.05],[0.05,0.12,1.55,0.10],[0.00,0.05,0.12,1.60],[0.08,0.00,0.06,1.45]];
+  var Whh=[[0.80,0.06,0.03,0.00],[0.05,0.78,0.07,0.02],[0.02,0.06,0.82,0.05],[0.01,0.02,0.06,0.79]];
+  var bh=[0.02,-0.03,0.01,0.00];
+  var Why=[[0.10,0.10,0.10,0.95],[2.00,0.15,0.10,0.10],[0.10,2.00,0.15,0.10],[0.10,0.10,2.00,0.15],[0.05,0.05,0.05,2.00]];
+  var SCALE=2.5;
+  var seq=[0,1,2,3];
+  function stepOnce(h,x){
+    var out=[0,0,0,0];
+    for(var i=0;i<4;i++){
+      var z=bh[i];
+      for(var j=0;j<4;j++) z+=Whh[i][j]*h[j];
+      z+=Wxh[x][i];
+      out[i]=Math.tanh(z);
+    }
+    return out;
+  }
+  function softmax(z){
+    var m=Math.max.apply(null,z), e=[], s=0, i;
+    for(i=0;i<z.length;i++){ e[i]=Math.exp(z[i]-m); s+=e[i]; }
+    for(i=0;i<z.length;i++) e[i]/=s;
+    return e;
+  }
+  function probsFor(h){
+    var z=[], i, j;
+    for(i=0;i<Why.length;i++){
+      var s=0; for(j=0;j<4;j++) s+=Why[i][j]*h[j];
+      z.push(s*SCALE);
+    }
+    return softmax(z);
+  }
+  var hist=[[0,0,0,0]], preds=[null], h=[0,0,0,0], t;
+  for(t=0;t<seq.length;t++){
+    h=stepOnce(h,seq[t]);
+    hist.push(h.slice());
+    preds.push(probsFor(h));
+  }
+  var step=2, playing=false, ticker=null, lastT=0, acc=0;
+  var q=function(s){ return root.querySelector(s); };
+  var cvU=q('#cv-09-unroll');
+
+  function drawUnroll(hv){
+    var fit=NN.fitCanvas(cvU,236), ctx=fit.ctx, w=fit.w, hh=fit.h;
+    ctx.clearRect(0,0,w,hh);
+    var pad=6, colW=(w-pad*2)/4;
+    var yIn=32, yNode=104, yOut=184;
+    var accent=NN.token('--accent','#1F4FD1'), muted=NN.token('--muted','#68798C');
+    var ink2=NN.token('--ink2','#33475C'), line2=NN.token('--line2','#A9BACB');
+    var lo=NN.token('--seq-lo','#EAF2FC'), mid=NN.token('--seq-mid','#6da7ec'), hi=NN.token('--seq-hi','#0d366b');
+    for(var s=1;s<=4;s++){
+      var cx=pad+(s-1)*colW+colW/2;
+      var future=s>step, current=s===step;
+      ctx.globalAlpha=future?0.35:1;
+      if(current){
+        ctx.fillStyle=NN.token('--hl','rgba(31,79,209,.10)');
+        ctx.fillRect(pad+(s-1)*colW+1,42,colW-2,yOut-38);
+      }
+      if(s>1){
+        var pxp=pad+(s-2)*colW+colW/2;
+        ctx.strokeStyle=line2; ctx.lineWidth=1.5;
+        ctx.beginPath(); ctx.moveTo(pxp+20,yNode); ctx.lineTo(cx-21,yNode); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(cx-20,yNode); ctx.lineTo(cx-26,yNode-4); ctx.lineTo(cx-26,yNode+4); ctx.closePath(); ctx.fillStyle=line2; ctx.fill();
+      }
+      ctx.fillStyle=current?accent:ink2;
+      ctx.font='700 21px "Noto Sans SC", sans-serif';
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText(chars[s-1],cx,yIn);
+      ctx.strokeStyle=current?accent:line2; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.moveTo(cx,yIn+13); ctx.lineTo(cx,yNode-21); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx,yNode-21); ctx.lineTo(cx-4,yNode-27); ctx.lineTo(cx+4,yNode-27); ctx.closePath(); ctx.fillStyle=current?accent:line2; ctx.fill();
+      ctx.beginPath(); ctx.arc(cx,yNode,18,0,Math.PI*2);
+      ctx.fillStyle=NN.token('--surface','#fff'); ctx.fill();
+      ctx.strokeStyle=current?accent:line2; ctx.lineWidth=current?2.5:1.5; ctx.stroke();
+      ctx.fillStyle=current?accent:ink2;
+      ctx.font='600 13px "JetBrains Mono", monospace';
+      ctx.fillText('h'+s,cx,yNode);
+      var vw=colW-24; if(vw>58) vw=58; if(vw<30) vw=30;
+      var cw=vw/4, sx=cx-vw/2;
+      if(s<=step){
+        for(var k=0;k<4;k++){
+          var v=hist[s][k], tt=NN.clamp((v+1.6)/3.2,0,1);
+          var col=tt<0.5? NN.mix(lo,mid,tt*2): NN.mix(mid,hi,(tt-0.5)*2);
+          ctx.fillStyle='rgb('+col[0]+','+col[1]+','+col[2]+')';
+          ctx.fillRect(sx+k*cw+1,130,cw-2,10);
+        }
+      } else {
+        var ga=ctx.globalAlpha;
+        ctx.globalAlpha=0.2;
+        ctx.strokeStyle=line2; ctx.lineWidth=1;
+        for(var k2=0;k2<4;k2++) ctx.strokeRect(sx+k2*cw+1,130,cw-2,10);
+        ctx.globalAlpha=ga;
+      }
+      ctx.strokeStyle=current?accent:line2; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.moveTo(cx,yNode+20); ctx.lineTo(cx,yOut-14); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx,yOut-14); ctx.lineTo(cx-4,yOut-8); ctx.lineTo(cx+4,yOut-8); ctx.closePath(); ctx.fillStyle=current?accent:line2; ctx.fill();
+      if(s<=step){
+        var pp=preds[s], bi=0, kk;
+        for(kk=1;kk<pp.length;kk++) if(pp[kk]>pp[bi]) bi=kk;
+        ctx.fillStyle=current?accent:ink2;
+        ctx.font=(current?'700 ':'500 ')+'12px "Noto Sans SC", sans-serif';
+        ctx.fillText('预测 '+chars[bi]+' '+(pp[bi]*100).toFixed(0)+'%',cx,yOut);
+      } else {
+        ctx.fillStyle=muted; ctx.font='12px "Noto Sans SC", sans-serif';
+        ctx.fillText('?',cx,yOut);
+      }
+    }
+    ctx.globalAlpha=1;
+    ctx.fillStyle=muted; ctx.font='11px "Noto Sans SC", sans-serif';
+    ctx.textAlign='left'; ctx.textBaseline='top';
+    ctx.fillText('沿时间展开:每一列是一步,同一组 W 在四步里重复使用',pad,6);
+  }
+
+  function render(){
+    var hv=hist[step], p=preds[step], bi=0, i;
+    for(i=1;i<p.length;i++) if(p[i]>p[bi]) bi=i;
+    var so=q('#o-09-step');
+    if(so) so.textContent='已读入 '+step+' / 4 个字 · 当前预测:'+chars[bi]+' '+(p[bi]*100).toFixed(0)+'%';
+    NN.drawMatrix(q('#cv-09-hstate'),{data:[hv],colLabels:['h₁','h₂','h₃','h₄'],diverging:true,min:-1.6,max:1.6,showVals:true,cell:42});
+    NN.drawMatrix(q('#cv-09-wx'),{data:Wxh,rowLabels:chars,colLabels:['h₁','h₂','h₃','h₄'],diverging:true,min:-2,max:2,showVals:true,cell:26});
+    NN.drawMatrix(q('#cv-09-wy'),{data:Why,rowLabels:chars,colLabels:['h₁','h₂','h₃','h₄'],diverging:true,min:-2,max:2,showVals:true,cell:26});
+    NN.barChart(q('#cv-09-out'), chars.map(function(c,idx){
+      return {label:c,value:p[idx],text:(p[idx]*100).toFixed(1)+'%',color:idx===bi?'--c2':'--c1'};
+    }), {max:1,height:176});
+    drawUnroll(hv);
+    q('#b-09-prev').disabled=step<=1;
+    q('#b-09-next').disabled=step>=4;
+  }
+
+  function stopPlay(){
+    playing=false;
+    if(ticker){ ticker.stop(); ticker=null; }
+    var b=q('#b-09-play'); if(b) b.textContent='自动播放';
+  }
+  function togglePlay(){
+    if(playing){ stopPlay(); return; }
+    if(step>=4) step=1;
+    playing=true; lastT=0; acc=0;
+    q('#b-09-play').textContent='暂停';
+    ticker=NN.createTicker(root,function(ts){
+      if(!playing) return;
+      if(!lastT){ lastT=ts; return; }
+      acc+=ts-lastT; lastT=ts;
+      if(acc>=800){
+        acc=0;
+        if(step<4){ step++; render(); } else { stopPlay(); }
+      }
+    });
+    ticker.start();
+    render();
+  }
+
+  q('#b-09-prev').addEventListener('click',function(){ stopPlay(); if(step>1){ step--; render(); } });
+  q('#b-09-next').addEventListener('click',function(){ stopPlay(); if(step<4){ step++; render(); } });
+  q('#b-09-reset').addEventListener('click',function(){ stopPlay(); step=2; render(); });
+  q('#b-09-play').addEventListener('click',togglePlay);
+  window.Theme.on(function(){ render(); });
+  var rt=null;
+  window.addEventListener('resize',function(){ if(rt) clearTimeout(rt); rt=setTimeout(function(){ if(root.isConnected) render(); },150); });
+  render();
+});
+
+defineDemo('d-09-next', function(root){
+  if(!window.NN){
+    root.__nnWait=(root.__nnWait||0)+1;
+    if(root.__nnWait<100) setTimeout(function(){ window.DEMOS['d-09-next'](root); },40);
+    return;
+  }
+  var PRE={
+    '人工智':[['能',0.74],['慧',0.10],['力',0.06],['的',0.05],['会',0.05]],
+    '神经网':[['络',0.88],['站',0.04],['页',0.03],['状',0.02],['的',0.03]],
+    '机器学':[['习',0.81],['院',0.06],['者',0.04],['校',0.03],['的',0.06]],
+    '深度学':[['习',0.93],['者',0.02],['的',0.02],['院',0.02],['校',0.01]]
+  };
+  var prefix='人工智', temp=1;
+  var q=function(s){ return root.querySelector(s); };
+  var cv=q('#cv-09-pred');
+  function current(){
+    var base=PRE[prefix], out=[], s=0, i;
+    for(i=0;i<base.length;i++){ var v=Math.pow(base[i][1],1/temp); out.push([base[i][0],v]); s+=v; }
+    for(i=0;i<out.length;i++) out[i][1]/=s;
+    return out;
+  }
+  function render(){
+    var p=current(), bi=0, i;
+    for(i=1;i<p.length;i++) if(p[i][1]>p[bi][1]) bi=i;
+    NN.barChart(cv, p.map(function(d,idx){
+      return {label:d[0],value:d[1],text:(d[1]*100).toFixed(1)+'%',color:idx===bi?'--c2':'--c1'};
+    }), {max:1,height:210});
+    var arg=q('#o-09-arg');
+    if(arg) arg.textContent='前缀「'+prefix+'」→ 最可能的下一个字:「'+p[bi][0]+'」 '+(p[bi][1]*100).toFixed(1)+'%';
+  }
+  var btns=root.querySelectorAll('.seg button');
+  for(var i=0;i<btns.length;i++){
+    btns[i].addEventListener('click',function(){
+      prefix=this.getAttribute('data-pre');
+      for(var j=0;j<btns.length;j++) btns[j].setAttribute('aria-pressed', btns[j]===this?'true':'false');
+      render();
+    });
+  }
+  var sl=q('#s-09-temp'), out=q('#o-09-temp');
+  sl.addEventListener('input',function(){
+    temp=+sl.value/100;
+    out.textContent=temp.toFixed(2);
+    render();
+  });
+  window.Theme.on(function(){ render(); });
+  var rt=null;
+  window.addEventListener('resize',function(){ if(rt) clearTimeout(rt); rt=setTimeout(render,150); });
+  render();
+});
+</script>

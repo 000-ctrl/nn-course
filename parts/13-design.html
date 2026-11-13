@@ -1,0 +1,578 @@
+<section class="ch" id="ch-13-design" data-num="13" data-title="设计你自己的网络">
+  <header class="ch-head">
+    <div class="ch-eyebrow"><span class="dot"></span>第 13 章 · 实战</div>
+    <h1 class="ch-title">设计你自己的网络</h1>
+    <p class="ch-sub">把前十二章压缩成一张决策清单,再亲手搭一个能训练、能诊断的网络。</p>
+    <div class="ch-rule"></div>
+  </header>
+
+  <div class="prereq"><b>读前</b><span>第 4 章的多层网络与激活、第 6 章的训练循环(前向、损失、反向、更新)、第 7 章的验证集与过拟合;手算参数量用到第 2 章的矩阵乘法。</span><b>可跳过</b><span>13.8 的两段 PyTorch 代码块和两个演示面板,不跑代码也能读懂主线。</span></div>
+
+  <p class="lead">建模最贵的错误,不是选错激活函数,而是在没有基线(baseline)的情况下直接堆一个复杂网络。前 12 章给了你零件,这一章给装配顺序:先回答四个问题,再跑一条最笨的基线,然后用最小模型把流程跑通,最后才谈容量和调参。</p>
+
+  <h3><span class="h3-n">13.1</span>先回答四个问题</h3>
+  <p>拿到任务,先填四行:任务是分类、回归还是生成;数据有多少条、多少类;模型跑在哪里,单次推理(inference)允许多少毫秒;最简单的基线能拿多少分。这四行分别决定输出层、模型规模、推理预算和验收标准。顺序不能反,先定指标,再定模型。</p>
+  <p>输出层由任务类型唯一决定。分类任务为每个类别输出一个未归一化的得分,术语叫 <code>logits</code>(原始得分),再由 <code>softmax</code>(归一化函数)变成和为 1 的概率。回归任务输出一个实数,最后一层不要接 sigmoid。生成任务输出与目标同形的分布参数,例如每个像素 256 个取值的概率,或词表上每个词元(token)的分布。</p>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>任务</th><th>最后一层</th><th>激活</th><th>损失</th><th>先看哪个指标</th></tr></thead>
+      <tbody>
+        <tr><td>二分类</td><td>1 个 logit,或 2 个</td><td>无</td><td>BCEWithLogits(二分类交叉熵)或 CrossEntropy(交叉熵)</td><td>准确率、召回率</td></tr>
+        <tr><td>k 分类</td><td>k 个 logits</td><td>无,交叉熵内做 softmax</td><td>CrossEntropyLoss(交叉熵损失)</td><td>准确率、混淆矩阵</td></tr>
+        <tr><td>回归</td><td class="num">1 个实数</td><td>无,保持线性</td><td>MSELoss(均方误差)或 L1Loss(平均绝对误差)</td><td>RMSE(均方根误差)、MAE(平均绝对误差)</td></tr>
+        <tr><td>生成</td><td>与目标同形</td><td>视分布而定</td><td>负对数似然、扩散损失</td><td>样本质量、FID(生成质量分,越低越好)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>一个高频错误是在 PyTorch 里先写 <code>nn.Softmax</code>,再喂给 <code>CrossEntropyLoss</code>。交叉熵(cross-entropy)损失内部已经做了 log-softmax,你重复一次会让数值不稳定:当 logit 之间的差大到极端(例如 fp32(32 位浮点数)下相差 100 以上、fp16(16 位半精度)下相差约 17 以上),先 softmax 再取对数会下溢成 log(0),得到负无穷。正确做法是最后一层只输出原始分数,让损失函数自己处理。回归任务套 sigmoid 则会把房价 30 万到 200 万压进 0 到 1,网络再努力也拟合不了。</p>
+
+  <div class="callout key">
+    <b>输出层的三件事</b>
+    <p>维度等于类别数,回归等于 1;激活保持线性;损失选交叉熵或均方误差。只要这三件事配对,后面的调参才有意义。</p>
+  </div>
+
+  <div class="quiz" data-id="q-13-1">
+    <p class="q">三分类任务(猫、狗、兔),最后一层最合适的写法是哪种?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="交叉熵内部已经做了一次 log-softmax,你手动先做 softmax 等于做了两次,概率会被压平、梯度变小,数值也不稳定。">3 个输出,先手动做 softmax,再喂给交叉熵</button>
+      <button class="opt" data-k="B" data-ok data-why="对:三个类各得一个未归一化的分数,交叉熵内部做 log-softmax 并比较概率分布;最后一层保持线性,既不重复 softmax,数值也最稳。">3 个输出,直接给 logits,损失用交叉熵</button>
+      <button class="opt" data-k="C" data-why="sigmoid 只回答“是不是”一个问题,无法表达三个互斥类别;把三类压成一个数还隐含了类别有大小顺序。">1 个输出加 sigmoid,损失用均方误差</button>
+      <button class="opt" data-k="D" data-why="ReLU 的输出没有上界,也不是概率;而且分类要用交叉熵,均方误差在错得很离谱时梯度反而可能变小。">3 个输出加 ReLU,损失用均方误差</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">13.2</span>数据量决定模型多大</h3>
+  <p>参数量(parameter count)是模型容量的第一近似。一个全连接层有 <var>n</var><sub>in</sub> × <var>n</var><sub>out</sub> 个权重,再加 <var>n</var><sub>out</sub> 个偏置;整网参数就是各层之和。</p>
+
+  <div class="math">参数量 = Σ(求和) (<var>n</var><sub>in</sub> × <var>n</var><sub>out</sub> + <var>n</var><sub>out</sub>)</div>
+
+  <p>经验起点:小数据,也就是几百到几千条时,先让参数量落在样本量的 1/10 到 1 倍之间;图像和文本可以靠数据增强、预训练把比例反过来,但那等于额外注入了信息。举例:600 个二维点、3 类,一个 2→16→16→3 的网络有 371 个参数,约为每 1.6 个样本一个参数;6 万张 MNIST 用 10 万到 100 万参数都常见;100 万条文本从千万级参数起步。</p>
+  <p>这不是定律,而是止损线。真正决定容量的是验证曲线:训练损失降、验证损失也降,说明还能加;训练损失降、验证损失升,说明已经过头。先小后大,每次只加一档,你才知道收益来自哪里。</p>
+
+  <h3><span class="h3-n">13.3</span>部署位置决定推理预算</h3>
+  <p>参数量决定内存占用:fp32 每个参数 4 字节,371 个参数只有 1.5 KB,1000 万参数是 40 MB;量化(quantization)到 int8 后降到 10 MB。推理的计算量,全连接网络每个样本约 2 × 参数量 次浮点运算;Transformer 每个 token 也约 2 × 参数量。一个 70 亿参数的模型生成一个 token 约 140 亿次运算。</p>
+  <p>延迟预算要提前写死:手机端一次点击后的推理通常给 30 ms 以内,服务器批处理给 10 ms,单片机上给 1 ms。超出预算时,优先级是换更小的模型、剪枝(pruning)、量化,最后才是换硬件。把小批量(mini-batch)的批大小(batch size)调大能提高吞吐,但会增加单次延迟,交互场景不要盲目堆批。</p>
+
+  <h3><span class="h3-n">13.4</span>永远先做最简单的基线</h3>
+  <p>基线(baseline)是你判断模型有没有学到东西的参照物。分类任务先算多数类:3 类各 80 个样本,多数类准确率是 33.3%;2 类圆环是 50%。回归任务先预测训练集均值,得到一个 MSE。再上一个逻辑回归(logistic regression),它在二维问题上只能画一条直线,圆环大概 55% 到 65%,异或接近 50%。</p>
+  <p>如果神经网络训练 20 轮(epoch)后还没超过这条线,先别加层。按顺序查:标签和输入是否错位;归一化是否只用了训练集统计;最后一层和损失是否匹配;学习率(learning rate)是否大到发散。这四类 bug 占了新手失败的大半。</p>
+
+  <div class="callout tip">
+    <b>基线要同口径</b>
+    <p>基线要跟模型用同一份切分、同一个指标。基线 62%,模型 64%,先怀疑评估脚本;基线 62%,模型 91%,才值得继续调。</p>
+  </div>
+
+  <h3><span class="h3-n">13.5</span>记录实验,而不是记住实验</h3>
+  <p>实验记录(experiment log)至少包含:日期、代码版本、数据版本、随机种子(random seed)、模型结构、优化器和学习率、批大小、训练与验证指标、耗时、结论。一次只改一个变量,否则提升归因于谁永远说不清。</p>
+  <p>随机种子会带来波动。小数据上跑 3 个种子,报告 0.91 ± 0.02 这样的均值与标准差;如果两个配置的差距小于一个标准差,它们可能没有区别。把每一行实验写进一个表格,比在脑子里记“上次好像好一点”可靠得多。</p>
+
+  <div class="callout warn">
+    <b>测试集分数高,不等于模型好</b>
+    <p>你每看一次测试集分数、再据此改一次超参(hyperparameter),测试集的信息就泄漏(data leakage)进了模型选择,它已经变成了验证集。正确做法是从训练集里再切 20% 做验证集,测试集锁进抽屉,只在最后评估一次;如果一定要反复用,就另留一份从未看过的 holdout。</p>
+  </div>
+
+  <h3><span class="h3-n">13.6</span>完整的搭建流程</h3>
+  <ol class="steps">
+    <li><strong>写清任务和指标。</strong>是二分类还是 k 分类,优化准确率、召回率还是 RMSE。指标不同,阈值和损失都会不同。</li>
+    <li><strong>切分数据。</strong>常见 60/20/20 或 80/10/10,固定 seed,保存切分结果。所有模型必须用同一份切分。</li>
+    <li><strong>跑基线。</strong>多数类、训练集均值,再加一个逻辑回归。把这三个数写在实验表第一行。</li>
+    <li><strong>搭最小模型。</strong>1 个隐藏层、宽度 8 到 16,先不加任何正则。目标是跑通,不是刷分。</li>
+    <li><strong>做过拟合(overfitting)自检。</strong>取 32 个样本,关掉正则化(regularization),训练到接近 100% 准确率。做不到,说明标签、损失或优化器接错了,先修 bug。</li>
+    <li><strong>全量训练加早停。</strong>验证损失连续 10 轮不降就停,取验证损失最低的那一版权重,这叫早停(early stopping)。</li>
+    <li><strong>再调容量与正则。</strong>先加宽或加深,每次一档;验证损失开始上升时,再加 weight decay、dropout 或数据增强。顺序反了会多花好几轮实验。</li>
+    <li><strong>最后评测一次测试集。</strong>记录配置、参数量、延迟和测试指标,导出模型,再谈上线监控。</li>
+  </ol>
+
+  <h3><span class="h3-n">13.7</span>读懂两条曲线</h3>
+  <p>把训练损失和验证损失画在同一张图上,四种形状对应四种动作。两条都高:欠拟合(underfitting),加宽、加深或提高学习率。训练低、验证高:过拟合,加正则、减容量、加数据。两条都低且贴近:可以停。训练损失突然变成 NaN:学习率过大或数据里有 nan,先把学习率除以 10。</p>
+  <p>学习率也有形状:太大时损失上下震荡,太小时几乎是一条缓慢下降的直线。小网络常用 Adam,学习率 1e-3 到 1e-2;SGD 配 momentum 常用 1e-2 到 1e-1;批大小取 32 到 256。下面的搭建器把这些选择放在一个面板里,你改一项,它就重新训练并给出诊断。</p>
+
+  <div class="demo" id="d-13-builder">
+    <div class="demo-bar"><span class="live">交互</span><span>网络搭建器:改配置,立刻重训</span><span class="sp"></span><span class="tag">约 3 秒自动暂停</span></div>
+    <div class="demo-body">
+      <div class="grid-2">
+        <div class="canvas-wrap"><canvas id="cv-13-boundary" height="300"></canvas></div>
+        <div class="canvas-wrap"><canvas id="cv-13-loss" height="300"></canvas></div>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><b id="o-13-params">—</b><span>参数量</span></div>
+        <div class="stat"><b id="o-13-trainacc">—</b><span>训练准确率</span></div>
+        <div class="stat"><b id="o-13-testacc">—</b><span>测试准确率</span></div>
+        <div class="stat"><b id="o-13-step">0</b><span>已训练步数</span></div>
+        <div class="stat"><b id="o-13-arch">—</b><span>结构</span></div>
+      </div>
+      <div class="controls">
+        <div class="ctl">
+          <label>数据集</label>
+          <div class="seg" data-seg="dataset">
+            <button data-v="xor" aria-pressed="false">异或</button>
+            <button data-v="circle" aria-pressed="true">圆环</button>
+            <button data-v="spiral" aria-pressed="false">螺旋</button>
+          </div>
+        </div>
+        <div class="ctl">
+          <label>激活函数</label>
+          <div class="seg" data-seg="act">
+            <button data-v="relu" aria-pressed="true">ReLU</button>
+            <button data-v="tanh" aria-pressed="false">tanh</button>
+            <button data-v="leaky" aria-pressed="false">Leaky</button>
+          </div>
+        </div>
+        <div class="ctl">
+          <label>优化器</label>
+          <div class="seg" data-seg="opt">
+            <button data-v="adam" aria-pressed="true">Adam</button>
+            <button data-v="momentum" aria-pressed="false">Momentum</button>
+            <button data-v="sgd" aria-pressed="false">SGD</button>
+          </div>
+        </div>
+        <div class="ctl"><label for="s-13-layers">隐藏层数 <output id="o-13-layers">2</output></label><input id="s-13-layers" type="range" min="1" max="4" step="1" value="2"></div>
+        <div class="ctl"><label for="s-13-width">每层宽度 <output id="o-13-width">16</output></label><input id="s-13-width" type="range" min="4" max="64" step="4" value="16"></div>
+        <div class="ctl"><label for="s-13-lr">学习率 <output id="o-13-lr">0.010</output></label><input id="s-13-lr" type="range" min="0" max="100" step="1" value="50"></div>
+        <button class="btn primary" id="b-13-run">暂停</button>
+        <button class="btn" id="b-13-reset">重新训练</button>
+      </div>
+      <div class="callout" id="d-13-diag"><b>诊断</b><span id="o-13-diag">正在训练…</span></div>
+    </div>
+    <div class="demo-hint">左图是决策边界,右图是训练与验证损失。点上方的“暂停”能停在任何一帧;把宽度从 16 拉到 64 看参数量怎么涨,把数据换成螺旋看 3 类边界怎么卷起来。</div>
+  </div>
+
+  <h3><span class="h3-n">13.8</span>把配置变成代码</h3>
+  <p>配置确定后,把它翻译成代码。下面这段就是搭建器同一套结构的 PyTorch 版本:隐藏层用 <code>nn.Linear</code> 加激活函数堆叠,最后一层只输出 logits,损失用交叉熵。参数量可以手算:每层 <var>n</var><sub>in</sub> × <var>n</var><sub>out</sub> 加 <var>n</var><sub>out</sub>。上面的搭建器一改,这段代码就跟着变。</p>
+
+  <div class="demo" id="d-13-code">
+    <div class="demo-bar"><span class="live">交互</span><span>配置到 PyTorch 代码</span><span class="sp"></span><span class="tag">实时生成</span></div>
+    <div class="demo-body">
+      <div class="controls">
+        <div class="ctl">
+          <label>输出头</label>
+          <div class="seg" data-seg="head">
+            <button data-v="cls2" aria-pressed="true">二分类</button>
+            <button data-v="cls3" aria-pressed="false">三分类</button>
+            <button data-v="reg" aria-pressed="false">回归</button>
+          </div>
+        </div>
+        <div class="ctl"><label for="s-13-clayers">隐藏层数 <output id="o-13-clayers">2</output></label><input id="s-13-clayers" type="range" min="1" max="4" step="1" value="2"></div>
+        <div class="ctl"><label for="s-13-cwidth">每层宽度 <output id="o-13-cwidth">16</output></label><input id="s-13-cwidth" type="range" min="4" max="64" step="4" value="16"></div>
+        <div class="ctl">
+          <label>激活函数</label>
+          <div class="seg" data-seg="cact">
+            <button data-v="relu" aria-pressed="true">ReLU</button>
+            <button data-v="tanh" aria-pressed="false">tanh</button>
+            <button data-v="leaky" aria-pressed="false">Leaky</button>
+          </div>
+        </div>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><b id="o-13-cparams">—</b><span>参数量</span></div>
+        <div class="stat"><b id="o-13-cshape">—</b><span>输出形状</span></div>
+      </div>
+      <div class="code-wrap">
+        <div class="code-bar">python<span class="sp"></span><button class="code-btn" id="b-13-copy">复制</button></div>
+        <pre class="code"><code id="d-13-code-text"></code></pre>
+      </div>
+    </div>
+    <div class="demo-hint">这里改层数、宽度、激活,上面的搭建器会同步重训;切换输出头只会改最后一行和损失函数,方便你对比分类与回归的差别。</div>
+  </div>
+
+  <p>注意三个细节:第一,输入维度要和特征数一致,这里写 2 是因为输入是二维点;第二,分类的最后一层不要接 softmax,<code>CrossEntropyLoss</code> 要的是 logits;第三,回归把最后一层改成 1 个输出并换成 <code>MSELoss</code>,预测时用 <code>squeeze(-1)</code> 去掉多余维度。</p>
+
+  <p>把上面的结构补全成一个能跑的脚本,大约 30 行。它在普通 CPU 上十几秒内能跑完 30 轮,最后打印出的参数量是 1218:</p>
+
+  <div class="code-wrap">
+    <div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div>
+    <pre class="code"><code>import torch
+from torch import nn
+from torch.utils.data import DataLoader, TensorDataset
+
+torch.manual_seed(0)
+
+# 1. 造数据:600 个二维点,按 x1*x2 的符号分两类
+X = torch.randn(600, 2)
+y = (X[:, 0] * X[:, 1] > 0).long()
+dl = DataLoader(TensorDataset(X, y), batch_size=32, shuffle=True)
+
+# 2. 模型:2 -> 32 -> 32 -> 2
+model = nn.Sequential(
+    nn.Linear(2, 32), nn.ReLU(),
+    nn.Linear(32, 32), nn.ReLU(),
+    nn.Linear(32, 2),            # 2 个 logits,不要接 softmax
+)
+
+# 3. 损失与优化器
+loss_fn = nn.CrossEntropyLoss()  # 内部含 softmax
+opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+# 4. 训练 30 轮
+for epoch in range(30):
+    for xb, yb in dl:
+        opt.zero_grad()
+        loss = loss_fn(model(xb), yb)
+        loss.backward()
+        opt.step()
+    print(epoch, round(loss.item(), 4))
+
+print('参数总量:', sum(p.numel() for p in model.parameters()))
+</code></pre>
+  </div>
+
+  <p>这段脚本的二分类随机猜测交叉熵是 ln2,约 0.693。如果第一轮的损失停在 0.693 不动,先检查标签和 logits 的顺序;如果损失直接变成 nan,先把学习率从 1e-3 降到 1e-4。跑通之后再替换数据、加宽网络,顺序不要颠倒。</p>
+
+  <div class="quiz" data-id="q-13-2">
+    <p class="q">训练损失 0.02,验证损失 0.90,训练准确率 99%,验证准确率 71%。下一步最合理的是?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="训练损失已经很低,继续训练只会把训练集记得更死,验证损失通常继续上升,差距越拉越大。">继续训练 2000 步,让验证损失自己降下来</button>
+      <button class="opt" data-k="B" data-ok data-why="对:训练与验证差 28 个百分点,是典型过拟合。先降容量或加正则,再考虑补数据,这是成本最低的顺序。">加正则、把宽度减半,或补更多训练数据</button>
+      <button class="opt" data-k="C" data-why="验证集并进训练集后指标当然会变好,但你失去了唯一的泛化估计,真正的测试集上大概率更差。">把验证集并入训练集,再重新训练</button>
+      <button class="opt" data-k="D" data-why="学习率过大导致的是震荡或发散,不是训练好、验证差。把学习率调到 0.5 很可能让损失直接变成 nan。">把学习率调到 0.5,让模型跳出局部最优</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <div class="quiz" data-id="q-13-3">
+    <p class="q">你接手一个任务:800 条样本,有人已经搭了 200 万参数的网络。你的第一个动作应该是?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="200 万参数对 800 条样本是 2500 倍,几乎必然过拟合;而且没有基线,你无法判断它是否真的有效。">直接再加两层,把容量拉到 500 万参数</button>
+      <button class="opt" data-k="B" data-ok data-why="对:先跑多数类或逻辑回归基线,再从小模型开始。基线给你下限,小模型给你可解释的起点,只有超过基线,复杂模型才有存在理由。">先跑多数类或逻辑回归基线,再从小模型开始</button>
+      <button class="opt" data-k="C" data-why="没有基线和单变量实验,你分不清提升来自哪个改动,还会反复使用验证集,把它也调穿。">把学习率、批大小、dropout 等 20 个超参各试一遍</button>
+      <button class="opt" data-k="D" data-why="补数据可能对,但动手前你并不知道 800 条上的瓶颈是数据、特征还是模型。先花十分钟做基线,成本低得多。">立刻把数据扩到 100 万条再开始</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <div class="ch-foot">
+    <span class="state" data-state></span>
+    <span class="sp"></span>
+    <a class="btn" href="#ch-14-llm">下一章 →</a>
+  </div>
+</section>
+
+<script>
+const CH13 = {
+  build: { dataset: 'circle', layers: 2, width: 16, act: 'relu', opt: 'adam', lr: 0.01 },
+  head: 'cls2',
+  listeners: []
+};
+function ch13Emit() {
+  for (let i = 0; i < CH13.listeners.length; i++) {
+    try { CH13.listeners[i](); } catch (e) { console.error(e); }
+  }
+}
+function ch13WhenNN(fn) {
+  if (window.NN && window.NN.MLP) { try { fn(); } catch (e) { console.error(e); } return; }
+  let tries = 0;
+  (function wait() {
+    if (window.NN && window.NN.MLP) { try { fn(); } catch (e) { console.error(e); } return; }
+    if (++tries > 200) return;
+    setTimeout(wait, 16);
+  })();
+}
+function ch13SetSeg(seg, val) {
+  if (!seg) return;
+  Array.prototype.forEach.call(seg.children, function (b) {
+    b.setAttribute('aria-pressed', String(b.dataset.v === val));
+  });
+}
+defineDemo('d-13-builder', function (root) {
+  ch13WhenNN(function () {
+  const q = function (s) { return root.querySelector(s); };
+  const qa = function (s) { return Array.prototype.slice.call(root.querySelectorAll(s)); };
+  const D = window.Data || (window.NN && window.NN.Data);
+  const bcv = q('#cv-13-boundary'), lcv = q('#cv-13-loss');
+  const oParams = q('#o-13-params'), oTrain = q('#o-13-trainacc'), oTest = q('#o-13-testacc'), oStep = q('#o-13-step'), oArch = q('#o-13-arch'), oDiag = q('#o-13-diag');
+  const sLayers = q('#s-13-layers'), sWidth = q('#s-13-width'), sLr = q('#s-13-lr');
+  const oLayers = q('#o-13-layers'), oWidth = q('#o-13-width'), oLr = q('#o-13-lr');
+  const runBtn = q('#b-13-run');
+  const segDataset = q('.seg[data-seg="dataset"]');
+  const segAct = q('.seg[data-seg="act"]');
+  const segOpt = q('.seg[data-seg="opt"]');
+
+  let net = null, trainData = [], testData = [], allPts = [], bounds = [[-2, 2], [-2, 2]], classN = 2;
+  let step = 0, playing = false, target = 1000, lastRender = 0, lastBoundary = 0;
+  let trainAcc = 0, testAcc = 0, trainLoss = 0, testLoss = 0, diverged = false;
+  let trainSeries = [], testSeries = [];
+  let plot = null, ticker = null;
+  const rng = NN.mulberry32(77);
+
+  function pct(v) { return Math.round(v * 100) + '%'; }
+  function sliderToLr(v) { return Math.pow(10, -3 + 2 * (Number(v) / 100)); }
+  function lrToSlider(lr) { return Math.round((Math.log10(lr) + 3) / 2 * 100); }
+  function group(n) { return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+
+  function buildData() {
+    if (CH13.build.dataset === 'xor') { allPts = D.xor(240, 13); classN = 2; }
+    else if (CH13.build.dataset === 'spiral') { allPts = D.spiral(240, 3, 17); classN = 3; }
+    else { allPts = D.circle(240, 11); classN = 2; }
+    const sp = D.split(allPts, 0.8, 7);
+    trainData = sp.train;
+    testData = sp.test;
+    bounds = D.bounds(allPts, 0.35);
+  }
+  function buildNet() {
+    const L = Math.max(1, Math.min(4, Number(CH13.build.layers)));
+    const W = Math.max(4, Math.min(64, Number(CH13.build.width)));
+    const sizes = [2];
+    for (let i = 0; i < L; i++) sizes.push(W);
+    sizes.push(classN);
+    net = new NN.MLP(sizes, { act: CH13.build.act, out: 'softmax', seed: 31 });
+  }
+  function trainBatch(n) {
+    for (let k = 0; k < n; k++) {
+      const batch = [];
+      const m = trainData.length;
+      for (let i = 0; i < 16; i++) batch.push(trainData[Math.floor(rng() * m)]);
+      net.step(batch, CH13.build.lr, { opt: CH13.build.opt });
+      step++;
+      if (step % 5 === 0) {
+        trainLoss = net.loss(trainData.slice(0, 96));
+        trainSeries.push([step, trainLoss]);
+        if (trainSeries.length > 260) trainSeries.shift();
+      }
+      if (step % 20 === 0) {
+        testLoss = net.loss(testData);
+        testSeries.push([step, testLoss]);
+        if (testSeries.length > 130) testSeries.shift();
+        trainAcc = net.accuracy(trainData.slice(0, 96));
+        testAcc = net.accuracy(testData);
+      }
+      if (!isFinite(trainLoss) || trainLoss > 50) { diverged = true; playing = false; break; }
+    }
+  }
+  function drawBoundary() {
+    if (!net) return;
+    NN.renderBoundary(bcv, net, { points: allPts, bounds: bounds, height: 300, soft: true, res: 44 });
+  }
+  function updateStats() {
+    if (!net) return;
+    oParams.textContent = group(net.paramCount());
+    oTrain.textContent = pct(trainAcc);
+    oTest.textContent = pct(testAcc);
+    oStep.textContent = String(step);
+    oArch.textContent = net.sizes.join(' · ');
+  }
+  function updatePlot() {
+    if (!plot) return;
+    plot.set({ series: [
+      { name: '训练', color: '--c1', data: trainSeries },
+      { name: '验证', color: '--c2', data: testSeries }
+    ] });
+  }
+  function updateDiag() {
+    const gap = trainAcc - testAcc;
+    let msg;
+    if (diverged || !isFinite(trainLoss) || trainLoss > 50) {
+      msg = '损失发散了。学习率 ' + Number(CH13.build.lr).toFixed(3) + ' 对这个网络偏大:先除以 3,或把优化器切回 Adam。';
+    } else if (step < 80) {
+      msg = '刚刚开始,两条损失都还在下降。先让它跑完,不要凭 80 步以内的曲线改结构。';
+    } else if (testAcc >= 0.9 && Math.abs(gap) < 0.12) {
+      msg = '拟合良好:训练 ' + pct(trainAcc) + ',测试 ' + pct(testAcc) + ',差距 ' + pct(Math.abs(gap)) + '。这组配置可以记为基线。';
+    } else if (trainAcc >= 0.88 && gap > 0.12) {
+      msg = '过拟合:训练 ' + pct(trainAcc) + ',测试只有 ' + pct(testAcc) + '。把宽度从 ' + CH13.build.width + ' 降到 ' + Math.max(4, Number(CH13.build.width) - 8) + ',加 L2 正则,或补更多数据。';
+    } else if (step > 240 && trainAcc < 0.8) {
+      msg = '欠拟合:训练集也只有 ' + pct(trainAcc) + '。把宽度加到 ' + Math.min(64, Number(CH13.build.width) + 8) + ',加一层,或把学习率调到 ' + Number(Math.min(0.1, CH13.build.lr * 2)).toFixed(3) + '。';
+    } else {
+      msg = '还在学习:训练 ' + pct(trainAcc) + ',测试 ' + pct(testAcc) + '。再跑 300 步,盯住验证损失是否继续下降。';
+    }
+    oDiag.textContent = msg;
+  }
+  function resetTrain() {
+    buildData();
+    buildNet();
+    step = 0; diverged = false;
+    trainSeries = []; testSeries = [];
+    trainAcc = 0; testAcc = 0; trainLoss = 0; testLoss = 0;
+    lastRender = 0; lastBoundary = 0;
+    target = 1000;
+    trainBatch(90);
+    playing = true;
+    runBtn.textContent = '暂停';
+    drawBoundary();
+    updateStats();
+    updatePlot();
+    updateDiag();
+  }
+  function syncFromState() {
+    const b = CH13.build;
+    sLayers.value = String(b.layers);
+    sWidth.value = String(b.width);
+    oLayers.textContent = String(b.layers);
+    oWidth.textContent = String(b.width);
+    sLr.value = String(lrToSlider(b.lr));
+    oLr.textContent = Number(b.lr).toFixed(3);
+    ch13SetSeg(segDataset, b.dataset);
+    ch13SetSeg(segAct, b.act);
+    ch13SetSeg(segOpt, b.opt);
+    if (b.dataset === 'spiral') CH13.head = 'cls3';
+    else if (CH13.head === 'cls3') CH13.head = 'cls2';
+    resetTrain();
+  }
+
+  qa('.seg[data-seg="dataset"] button').forEach(function (btn) {
+    btn.addEventListener('click', function () { CH13.build.dataset = btn.dataset.v; ch13Emit(); });
+  });
+  qa('.seg[data-seg="act"] button').forEach(function (btn) {
+    btn.addEventListener('click', function () { CH13.build.act = btn.dataset.v; ch13Emit(); });
+  });
+  qa('.seg[data-seg="opt"] button').forEach(function (btn) {
+    btn.addEventListener('click', function () { CH13.build.opt = btn.dataset.v; ch13Emit(); });
+  });
+  sLayers.addEventListener('input', function () { oLayers.textContent = sLayers.value; });
+  sLayers.addEventListener('change', function () { CH13.build.layers = Number(sLayers.value); ch13Emit(); });
+  sWidth.addEventListener('input', function () { oWidth.textContent = sWidth.value; });
+  sWidth.addEventListener('change', function () { CH13.build.width = Number(sWidth.value); ch13Emit(); });
+  sLr.addEventListener('input', function () { oLr.textContent = sliderToLr(sLr.value).toFixed(3); });
+  sLr.addEventListener('change', function () { CH13.build.lr = sliderToLr(sLr.value); ch13Emit(); });
+
+  runBtn.addEventListener('click', function () {
+    if (diverged) { resetTrain(); return; }
+    if (playing) {
+      playing = false;
+      runBtn.textContent = '继续训练';
+      updateStats(); updatePlot(); drawBoundary(); updateDiag();
+    } else {
+      if (step >= target) target = step + 600;
+      playing = true;
+      runBtn.textContent = '暂停';
+    }
+  });
+  q('#b-13-reset').addEventListener('click', function () { resetTrain(); });
+
+  plot = new NN.Plot(lcv, { xLabel: '训练步数', yLabel: '损失', series: [], height: 300, yZero: true });
+  ticker = NN.createTicker(root, function () {
+    if (!playing) return;
+    trainBatch(net && net.paramCount() > 4000 ? 3 : 8);
+    if (diverged) {
+      playing = false;
+      runBtn.textContent = '重新训练';
+      updateStats(); updatePlot(); drawBoundary(); updateDiag();
+      return;
+    }
+    if (step >= target) {
+      playing = false;
+      runBtn.textContent = '继续训练';
+      updateStats(); updatePlot(); drawBoundary(); updateDiag();
+      NN.toast('训练到 ' + target + ' 步,自动暂停');
+      return;
+    }
+    if (step - lastRender >= 10) {
+      lastRender = step;
+      updateStats();
+      updatePlot();
+      updateDiag();
+      if (step - lastBoundary >= 40) { lastBoundary = step; drawBoundary(); }
+    }
+  });
+
+  CH13.listeners.push(syncFromState);
+  resetTrain();
+  ticker.start();
+
+  const theme = window.Theme || (window.NN && window.NN.Theme);
+  if (theme && theme.on) theme.on(function () { drawBoundary(); updatePlot(); });
+  if (window.ResizeObserver) {
+    try {
+      const ro = new ResizeObserver(function () {
+        if (root.offsetParent !== null && net) drawBoundary();
+      });
+      ro.observe(bcv.parentElement || bcv);
+    } catch (e) { console.error(e); }
+  }
+  });
+});
+
+defineDemo('d-13-code', function (root) {
+  ch13WhenNN(function () {
+  const q = function (s) { return root.querySelector(s); };
+  const qa = function (s) { return Array.prototype.slice.call(root.querySelectorAll(s)); };
+  const codeEl = q('#d-13-code-text');
+  const oParams = q('#o-13-cparams'), oShape = q('#o-13-cshape');
+  const sLayers = q('#s-13-clayers'), sWidth = q('#s-13-cwidth');
+  const oLayers = q('#o-13-clayers'), oWidth = q('#o-13-cwidth');
+  const segHead = q('.seg[data-seg="head"]');
+  const segAct = q('.seg[data-seg="cact"]');
+
+  function group(n) { return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+  function outDim() { return CH13.head === 'reg' ? 1 : (CH13.head === 'cls3' ? 3 : 2); }
+  function paramCount() {
+    const L = Math.max(1, Math.min(4, Number(CH13.build.layers)));
+    const W = Math.max(4, Math.min(64, Number(CH13.build.width)));
+    const out = outDim();
+    let n = 2 * W + W;
+    for (let i = 1; i < L; i++) n += W * W + W;
+    n += W * out + out;
+    return n;
+  }
+  function renderCode() {
+    const L = Math.max(1, Math.min(4, Number(CH13.build.layers)));
+    const W = Math.max(4, Math.min(64, Number(CH13.build.width)));
+    const out = outDim();
+    const act = CH13.build.act === 'tanh' ? 'Tanh' : (CH13.build.act === 'leaky' ? 'LeakyReLU' : 'ReLU');
+    const lines = [];
+    lines.push('import torch');
+    lines.push('from torch import nn');
+    lines.push('');
+    lines.push('class Net(nn.Module):');
+    lines.push('    def __init__(self):');
+    lines.push('        super().__init__()');
+    lines.push('        self.body = nn.Sequential(');
+    lines.push('            nn.Linear(2, ' + W + '),');
+    lines.push('            nn.' + act + '(),');
+    for (let i = 1; i < L; i++) {
+      lines.push('            nn.Linear(' + W + ', ' + W + '),');
+      lines.push('            nn.' + act + '(),');
+    }
+    if (CH13.head === 'reg') {
+      lines.push('            nn.Linear(' + W + ', 1),   # 回归:1 个实数');
+    } else {
+      lines.push('            nn.Linear(' + W + ', ' + out + '),   # ' + out + ' 个 logits');
+    }
+    lines.push('        )');
+    lines.push('');
+    lines.push('    def forward(self, x):');
+    lines.push('        return self.body(x)');
+    lines.push('');
+    lines.push('model = Net()');
+    lines.push('print(sum(p.numel() for p in model.parameters()), "params")');
+    lines.push('');
+    if (CH13.head === 'reg') {
+      lines.push('loss_fn = nn.MSELoss()          # 回归用均方误差');
+      lines.push('pred = model(xb).squeeze(-1)    # 去掉长度 1 的维度');
+    } else {
+      lines.push('loss_fn = nn.CrossEntropyLoss() # 内部自带 softmax');
+      lines.push('pred = model(xb)                # 直接喂 logits');
+    }
+    codeEl.textContent = lines.join('\n');
+    oParams.textContent = group(paramCount());
+    oShape.textContent = CH13.head === 'reg' ? '[batch, 1]' : '[batch, ' + out + ']';
+    ch13SetSeg(segHead, CH13.head);
+  }
+  function syncCode() {
+    sLayers.value = String(CH13.build.layers);
+    sWidth.value = String(CH13.build.width);
+    oLayers.textContent = String(CH13.build.layers);
+    oWidth.textContent = String(CH13.build.width);
+    ch13SetSeg(segAct, CH13.build.act);
+    ch13SetSeg(segHead, CH13.head);
+    renderCode();
+  }
+
+  qa('.seg[data-seg="head"] button').forEach(function (btn) {
+    btn.addEventListener('click', function () { CH13.head = btn.dataset.v; renderCode(); });
+  });
+  qa('.seg[data-seg="cact"] button').forEach(function (btn) {
+    btn.addEventListener('click', function () { CH13.build.act = btn.dataset.v; ch13Emit(); });
+  });
+  sLayers.addEventListener('input', function () { oLayers.textContent = sLayers.value; });
+  sLayers.addEventListener('change', function () { CH13.build.layers = Number(sLayers.value); ch13Emit(); });
+  sWidth.addEventListener('input', function () { oWidth.textContent = sWidth.value; });
+  sWidth.addEventListener('change', function () { CH13.build.width = Number(sWidth.value); ch13Emit(); });
+
+  CH13.listeners.push(syncCode);
+  syncCode();
+
+  });
+});
+</script>

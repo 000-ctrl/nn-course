@@ -1,0 +1,831 @@
+<section class="ch" id="ch-11-generative" data-num="11" data-title="生成模型">
+  <header class="ch-head">
+    <div class="ch-eyebrow"><span class="dot"></span>第 11 章 · 生成</div>
+    <h1 class="ch-title">生成模型</h1>
+    <p class="ch-sub">学会数据本身的形状,再从噪声里造出没见过的新样本。</p>
+    <div class="ch-rule"></div>
+  </header>
+
+  <div class="prereq"><b>读前</b><span>第 4 章多层网络、第 5 章反向传播、第 6 章训练循环(会写一次前向与一次反向即可);E 与 σ 见附录 A.6。本章不依赖第 10 章。</span><b>可跳过</b><span>11.6 末尾的 PyTorch 代码块和“反向采样到底怎么走”折叠框,跳过不影响主线。</span></div>
+
+  <p class="lead">前十章的网络都在做同一件事:给定输入,算出一个输出。这一章换一个问题——没有输入时,网络能不能自己造出一张合理的图?你会训练一个自编码器,亲眼看到潜空间里的结构;再训练一个微型扩散模型,看噪声怎样一步步退成轮廓。</p>
+
+  <h3><span class="h3-n">11.1</span>判别与生成:两条相反的路</h3>
+
+  <p>判别式模型(discriminative model)学的是条件概率 <code>p(y|x)</code>:给你一张 28×28 的手写数字图,它在 10 个类别上给出概率。它不需要知道“一张数字图长什么样”,只需要在 784 维像素空间里找到一块能把类别分开的区域。生成式模型(generative model)学的是数据本身的分布 <code>p(x)</code>,或者输入与输出的联合分布 <code>p(x,y)</code>。学会之后,你可以从 <code>p(x)</code> 里抽样,得到一张训练集里不存在、但看起来仍属于同一分布的新图。</p>
+
+  <p>两件事的难度并不对称。28×28 的图有 784 个像素,即使每个像素只取 0 或 1,可能的图像也有 <code>2^784 ≈ 10^236</code> 种。真实的手写数字只占其中极薄的一片。判别模型只要把这一片和外面分开;生成模型必须给这一片一个概率,并保证采样落回去。本章的四条路线,就是四种逼近这片分布的办法。</p>
+
+  <div class="callout key"><b>核心区别</b>判别模型回答“这像不像猫”,生成模型回答“给我一只猫”。前者只需要一个分数,后者需要一个能反复抽样的分布。</div>
+
+  <h3><span class="h3-n">11.2</span>自编码器:压缩再还原</h3>
+
+  <p>自编码器(autoencoder, AE)是最直白的生成尝试。它由两部分组成:编码器(encoder)把 784 维的图压成一个很短的向量 <code>z</code>,解码器(decoder)再把 <code>z</code> 还原成 784 维的图。训练目标只有一个——让还原出的图尽量接近原图:</p>
+
+  <div class="math">L<sub>AE</sub> = ‖ <var>x</var> − <var>g</var>(<var>f</var>(<var>x</var>)) ‖<sup>2</sup></div>
+
+  <p><code>f</code> 是编码器、<code>g</code> 是解码器(encoder/decoder)。逐像素算差值、平方、再求和:重建图越接近原图,这个数越小。</p>
+
+  <p>中间那个 <code>z</code> 叫潜变量(latent variable),所有可能的 <code>z</code> 组成的空间叫潜空间(latent space)。当 <code>z</code> 只有 2 维时,网络被迫做一件有意思的事:它必须把“哪些像素总是一起亮”的规律塞进两个数里。于是潜空间不再是随机的坐标纸,相似图片的编码会聚在一起;沿着某个方向移动 <code>z</code>,解码出的图会连续地变形,而不是跳变。</p>
+
+  <p>具体到下面的演示:输入是 12×12=144 维的程序生成图形,编码器 <code>144→40→2</code>,解码器 <code>2→40→144</code>,一共 11,906 个参数,加载时先在 500 张图形上热身 60 步(约 0.4 秒),之后在后台继续训练。图形本身由两个旋钮生成:形状指数从 2 到 8(2 是圆,8 接近方),半径从 3.0 到 4.8 个像素;图形画成空心轮廓,不是实心色块。数据真正只有 2 个自由度,2 维潜空间刚好装得下。</p>
+
+  <div class="demo" id="d-11-latent">
+    <div class="demo-bar"><span class="live">交互</span><span>潜空间漫游:每一格都是一个解码结果</span><span class="sp"></span><span class="tag">悬停 / 拖动</span></div>
+    <div class="demo-body">
+      <div class="canvas-wrap"><canvas id="cv-11-latent" height="340"></canvas></div>
+      <div class="controls">
+        <div class="ctl"><label for="s-11-z1">潜变量 z₁ <output id="o-11-z1">0.00</output></label><input id="s-11-z1" type="range" min="-3" max="3" step="0.02" value="0"></div>
+        <div class="ctl"><label for="s-11-z2">潜变量 z₂ <output id="o-11-z2">0.00</output></label><input id="s-11-z2" type="range" min="-3" max="3" step="0.02" value="0"></div>
+        <button class="btn sm" id="b-11-retrain">重新训练</button>
+        <span class="pill" id="p-11-stat">损失 0.0000 · 0 步</span>
+      </div>
+    </div>
+    <div class="demo-hint">鼠标在网格上移动会选中对应样本;拖动两根滑块,看图形连续变形。训练在后台继续,网格会随权重变化。右边的大图是当前坐标的解码结果。</div>
+  </div>
+
+  <p>你看到的网格,每一格都是解码器对一个潜变量坐标的输出,不是预先画好的图。网格的不同区域对应不同的形状和大小:有的格子接近圆,有的接近圆角方;沿着某个方向移动,轮廓连续地变方、变大。说明编码器确实把数据的两个自由度安排进了两个坐标轴——虽然轴的方向被网络自己旋转过,不一定和你的直觉对齐。把鼠标移到某一格,两根滑块会跳到那个坐标;拖动滑块,图形连续变化。这就是“潜空间有结构”的具体含义:相邻的 <code>z</code> 解码出相似的图,方向对应着可解释的变化。</p>
+
+  <p>但自编码器有一个致命缺陷:它只保证在训练样本的编码附近能还原,对潜空间的其它位置没有任何约束。你在网格边缘看到的模糊形状或整块色块,就是证据。想从标准正态分布(standard normal,均值 0、方差 1 的钟形分布)里随机抽一个 <code>z</code> 解码?大概率抽到训练时从未出现过的区域,输出既不像圆也不像方。自编码器给了你一个压缩映射,却没有给你一个可以采样的概率分布。</p>
+
+  <h3><span class="h3-n">11.3</span>VAE:给潜空间装上概率</h3>
+
+  <p>变分自编码器(variational autoencoder, VAE)补上的正是这一点。编码器不再输出一个点,而是输出两个向量:均值 <code>μ</code> 和方差 <code>σ²</code>(<code>σ</code> 是标准差,standard deviation)。训练时先从这个正态分布里抽一个 <code>z</code>,再送去解码:</p>
+
+  <div class="math"><var>z</var> = <var>μ</var> + <var>σ</var> ⊙ <var>ε</var>,&nbsp;&nbsp; <var>ε</var> ~ N(0, I)</div>
+
+  <p>意思是:在编码器给出的均值附近,按它给出的标准差撒一个随机点,再把这个点送去解码。</p>
+
+  <p><code>ε</code> 从标准正态分布采样,⊙ 是逐元素相乘。这个写法叫重参数化技巧(reparameterization trick):随机性被挪到不参与训练的 <code>ε</code> 上,<code>μ</code> 和 <code>σ</code> 仍然是网络的可导输出,梯度可以穿过采样这一步回传。没有它,采样是一个不可导的随机操作,反向传播在这里就断了。</p>
+
+  <p>损失函数由两项组成(重建项写成均方误差的简化版):</p>
+
+  <div class="math">L<sub>VAE</sub> = ‖ <var>x</var> − <var>g</var>(<var>z</var>) ‖<sup>2</sup> + <var>β</var> · KL( N(<var>μ</var>, <var>σ</var><sup>2</sup>) ‖ N(0, I) )</div>
+
+  <p>两项相加:既要还原得像,又要把编码分布拉向标准正态。</p>
+
+  <p>第一项要求重建准确,第二项是 KL 散度(Kullback–Leibler divergence),衡量编码器给出的分布离标准正态有多远。把每个样本的后验(posterior,见过数据后对 <code>z</code> 的推断)都往 <code>N(0,I)</code> 拉,效果是整个潜空间被铺成一片连续、没有空洞的概率云:任意抽一个 <code>z</code>,解码器都在它附近见过训练样本。</p>
+
+  <p><code>β</code> 控制两项的拉扯。<code>β</code> 太小,KL 项形同虚设,VAE 退化成普通自编码器:重建很清楚,但潜空间又出现空洞,采样质量下降。<code>β</code> 太大,编码器干脆放弃区分样本,把所有输入都映射到同一小片区域,解码器只能输出所有图片的平均值。常见取值在 0.5 到 4 之间;β-VAE 的论文用 <code>β=4</code> 换取更解耦的潜变量,代价是重建更模糊。原始 VAE 在 MNIST 上用 <code>784→400→20</code> 的架构,约 64.5 万个参数,20 维潜空间已经能生成可辨认的数字。本章的 2 维版本不是为了效果好,而是为了让你用眼睛看见分布。</p>
+
+  <div class="callout warn"><b>常见误解</b>VAE 生成的图模糊,是因为网络太小或者训练不够。把解码器换成几十层的 ResNet,模糊依旧。原因在目标函数:像素级重建误差(尤其均方误差)对不确定的细节取平均,模型宁可输出一张“平均的脸”,也不愿赌一个清晰的细节;KL 项又要求潜变量覆盖一整片区域,进一步鼓励平滑。想要锐利,得换损失(感知损失、对抗损失)或换模型(GAN、扩散),而不是单纯加层数。</div>
+
+  <div class="quiz" data-id="q-11-1">
+    <p class="q">同样把图片压到 2 维,普通自编码器和 VAE 的关键区别是什么?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="两者都可以是 2 维。区别不在维度大小,而在编码器输出的是一个点还是一个分布,以及是否有 KL 项把潜空间铺满。">VAE 的潜空间更大,所以能装下更多信息。</button>
+      <button class="opt" data-k="B" data-ok data-why="正确。VAE 的编码器输出均值和方差,再用 KL 项把整个潜空间压成连续分布,所以可以直接从 N(0,I) 采样;普通 AE 只定义了训练样本附近的点映射。">VAE 的编码器输出均值和方差,并用 KL 项把潜空间压成连续分布,所以能从 N(0,I) 直接采样。</button>
+      <button class="opt" data-k="C" data-why="网络结构不是区别。两者都可以用全连接层或卷积层,关键差别在编码器的输出形式与损失函数。">VAE 必须用卷积,普通自编码器只能用全连接层。</button>
+      <button class="opt" data-k="D" data-why="VAE 同样需要解码器。采样得到的 z 必须经过解码器 g(z) 才能变成图像,去掉解码器就只剩一串数字。">VAE 不需要解码器,直接从潜变量读出图片。</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">11.4</span>GAN:让两个网络互相为难</h3>
+
+  <p>生成对抗网络(generative adversarial network, GAN)放弃了“先压缩再还原”的路线。它直接训练一个从噪声到数据的映射:生成器(generator)<code>G</code> 接收 100 维随机噪声 <code>z</code>,输出一张图;判别器(discriminator)<code>D</code> 接收一张图,输出它是真实样本的概率。两个网络轮流训练,目标相反:</p>
+
+  <div class="math">min<sub>G</sub> max<sub>D</sub> E<sub>x~pdata</sub>[log <var>D</var>(<var>x</var>)] + E<sub>z~p(z)</sub>[log(1 − <var>D</var>(<var>G</var>(<var>z</var>)))]</div>
+
+  <p><code>E[·]</code> 是期望,按概率加权平均(expectation)。读法是:<code>D</code> 想把这个值调大(真实图判 1、生成图判 0),<code>G</code> 想把它调小(让 <code>D</code> 把生成图判成 1)。训练时交替:固定 <code>G</code>,用真实图和生成图训练 <code>D</code> 若干步;再固定 <code>D</code>,把 <code>G</code> 的输出贴上“真”的标签训练 <code>G</code>。理论上,当 <code>G</code> 的分布完全等于数据分布时,<code>D</code> 对任何输入都只能输出 0.5,双方达到纳什均衡(Nash equilibrium)。</p>
+
+  <p>实际训练远没有这么优雅。<code>D</code> 太强,<code>G</code> 的梯度会饱和到接近 0,生成器学不到东西;<code>D</code> 太弱,<code>G</code> 拿到的是噪声般的信号,生成质量来回震荡。这就是 GAN 需要精心调学习率、更新比例、梯度惩罚的原因。2014 年原始 GAN 用多层感知机在 MNIST 上生成模糊数字;2015 年 DCGAN 用卷积把 64×64 的卧室图做得像样;StyleGAN2 在 70,000 张 1024×1024 人脸上训练,生成一张图只需要一次前向,约 0.05 秒。速度是 GAN 至今最大的优势。</p>
+
+  <p>模式崩塌(mode collapse)是 GAN 最典型的失败。<code>G</code> 发现生成某一类样本最容易骗过当前的 <code>D</code>,就把所有噪声都映射到那一类,彻底放弃其它模式。比如在 10 类手写数字上训练,生成器可能只产出“1”和“7”,而且每个都长得差不多。<code>D</code> 学会识破后,<code>G</code> 又切换到另一个模式继续塌,训练在少数几个模式之间来回跳。根因是 GAN 的目标只要求“骗过 D”,没有一项损失明确要求“覆盖数据里的每一个模式”;这不是过拟合,也不是训练集太小。</p>
+
+  <div class="quiz" data-id="q-11-2">
+    <p class="q">训练 GAN 时,生成器开始反复输出几乎一样的“7”,判别器对此的准确率很高。最可能发生了什么?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="判别器准确率高是结果,不是原因。减少判别器参数量不会让生成器去覆盖其它模式,反而可能让对抗信号更弱。">判别器过拟合了训练集,应该减少判别器的参数量。</button>
+      <button class="opt" data-k="B" data-ok data-why="正确。生成器把所有噪声映射到少数能骗过判别器的样本上,这就是模式崩塌;它来自目标函数缺少覆盖全部模式的约束。">发生了模式崩塌:生成器把所有噪声映射到少数能骗过判别器的样本上。</button>
+      <button class="opt" data-k="C" data-why="学习率低通常表现为整体模糊、变化缓慢,不会表现为“只生成一个类别且每个都极其相似”。后者是目标层面的模式崩塌。">学习率太低,生成器还没学会其它数字。</button>
+      <button class="opt" data-k="D" data-why="真正的均衡是判别器对真假样本都输出 0.5,而不是对生成样本保持高准确率。高准确率说明生成器没有覆盖真实分布。">这是正常的纳什均衡,判别器本来就该对生成样本很自信。</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">11.5</span>扩散模型:先学加噪,再学一步步去噪</h3>
+
+  <p>扩散模型(diffusion model)换了一个更笨、但更稳的办法:不直接学 <code>p(x)</code>,而是学“怎样把噪声一步步变回数据”。它包含两个过程。</p>
+
+  <p>前向过程(forward process)是一串固定的加噪步骤:每一步给图加一点高斯噪声(Gaussian noise,均值 0 的正态随机扰动),共 <code>T</code> 步。取 <code>T=1000</code>、<code>β</code> 从 <code>10⁻⁴</code> 线性增到 <code>0.02</code> 时,最后一步的图和纯噪声在视觉上无法区分。关键公式是它的闭式解——你可以一步跳到任意 <code>t</code>,不必真的循环 1000 次:</p>
+
+  <div class="math"><var>x</var><sub>t</sub> = √<var>ᾱ</var><sub>t</sub> · <var>x</var><sub>0</sub> + √(1 − <var>ᾱ</var><sub>t</sub>) · <var>ε</var>,&nbsp;&nbsp; <var>ε</var> ~ N(0, I),&nbsp;&nbsp; <var>ᾱ</var><sub>t</sub> = ∏<sub>s=1</sub><sup>t</sup>(1 − <var>β</var><sub>s</sub>)</div>
+
+  <p><code>x₀</code> 是干净图,<code>x_t</code> 是第 <code>t</code> 步的图。<code>ᾱ_t</code> 是到 <code>t</code> 步为止累计保留的信号系数:<code>t=0</code> 时 <code>ᾱ=1</code>,只剩原图;<code>t=T</code> 时 <code>ᾱ≈0</code>,只剩噪声。这个式子说明,任意时刻的图都是原图和标准噪声的一个加权混合。</p>
+
+  <p>反向过程(reverse process)训练一个网络来猜:给定 <code>x_t</code> 和 <code>t</code>,这一步混进去的噪声是什么?记作 <code>ε_θ(x_t, t)</code>。损失就是预测噪声和真实噪声的均方误差:</p>
+
+  <div class="math">L<sub>diff</sub> = E[ ‖ <var>ε</var> − <var>ε</var><sub>θ</sub>( √<var>ᾱ</var><sub>t</sub> <var>x</var><sub>0</sub> + √(1−<var>ᾱ</var><sub>t</sub>) <var>ε</var>, <var>t</var> ) ‖<sup>2</sup> ]</div>
+
+  <p>注意这个损失里没有对抗、没有判别器、没有需要平衡的两个网络,只有一次回归。这是扩散模型训练稳定的根本原因:每一步都是一个普通的监督学习问题,梯度不会因为对手变强而消失。采样时从纯噪声 <code>x_T ~ N(0,I)</code> 出发,让网络估计并减掉噪声,重复 <code>T</code> 步。原始 DDPM(Denoising Diffusion Probabilistic Models)要 1000 次前向,DDIM(Denoising Diffusion Implicit Models)可以把同样的训练目标压到 20 到 50 步;下面的演示用 48 步。</p>
+
+  <p>演示训练一个 16×16 输入、64 个隐藏单元、33,216 个参数的小去噪器,在 320 张环状图形上先热身 60 步(约 0.8 秒),之后在后台继续训练。网络直接预测 <code>x₀</code>(与预测噪声等价,两者只差一个由 <code>ᾱ_t</code> 决定的线性变换),所以 DDIM 更新用 <code>x̂₀</code> 写最直观;为了让 48 步采样稳定,演示用的是余弦噪声调度(cosine schedule),不是上面那组线性 <code>β</code>。左边拖动 <code>t</code> 看同一张图被噪声吞没;右边从纯噪声开始逐步采样,看环的轮廓从颗粒里浮出来。</p>
+
+  <div class="demo" id="d-11-diffusion">
+    <div class="demo-bar"><span class="live">交互</span><span>加噪与去噪:同一个模型的两次方向</span><span class="sp"></span><span class="tag">拖动 / 播放</span></div>
+    <div class="demo-body">
+      <div class="grid-2">
+        <div class="canvas-wrap"><canvas id="cv-11-noisy" height="220"></canvas></div>
+        <div class="canvas-wrap"><canvas id="cv-11-denoise" height="220"></canvas></div>
+      </div>
+      <div class="controls">
+        <div class="ctl"><label for="s-11-t">前向噪声 t <output id="o-11-t">0.45</output></label><input id="s-11-t" type="range" min="0" max="1" step="0.01" value="0.45"></div>
+        <button class="btn primary" id="b-11-play">播放反向采样</button>
+        <button class="btn" id="b-11-shape">换一张图形</button>
+        <span class="pill" id="p-11-dstat">去噪器 60 步 · 损失 0.0000</span>
+        <span class="pill" id="p-11-dstep">完成 48 步</span>
+      </div>
+    </div>
+    <div class="demo-hint">左图:拖动 t,同一张干净图的噪声越来越大。右图:按“播放反向采样”,从纯噪声开始,每两帧走一个 DDIM 步。模型在播放时暂停训练,结束后继续。</div>
+  </div>
+
+  <p>为什么扩散成了主流?四个原因。第一,训练目标是回归,不会像 GAN 那样崩,超参数宽容得多。第二,每个训练样本都以一定概率被重建,模型没有动机放弃某些模式,模式覆盖明显更好。第三,样本质量:在 ImageNet 256×256 上,扩散模型的 FID(Fréchet Inception Distance)已经低于最好的 GAN。第四,条件化统一:文本、类别、深度图、遮罩都可以作为额外输入塞进 <code>ε_θ</code>,同一套框架通吃。</p>
+
+  <p>代价是采样慢。GAN 生成一张图只要 1 次前向,扩散要 20 到 1000 次。后来的潜扩散(latent diffusion)解决了大部分成本:先用自编码器把 512×512×3=786,432 维的图压到 64×64×4=16,384 维的潜空间,再在潜空间里做扩散,计算量降到约 1/48。Stable Diffusion 的 U-Net 约 8.6 亿参数,训练数据 LAION-5B 包含 58.5 亿个图文对;它生成的 512×512 图,实际上是在 64×64 的潜变量上采样出来的。</p>
+
+  <h3><span class="h3-n">11.6</span>四条路线放在一起</h3>
+
+  <div class="stat-row">
+    <div class="stat"><b>11,906</b><span>本章自编码器参数</span></div>
+    <div class="stat"><b>33,216</b><span>本章去噪器参数</span></div>
+    <div class="stat"><b>48</b><span>DDIM 采样步数</span></div>
+    <div class="stat"><b>1,000</b><span>原始扩散总步数</span></div>
+  </div>
+
+  <div class="tbl-wrap">
+    <table>
+      <tr><th>模型</th><th>学什么</th><th>能否采样</th><th>样本特点</th><th>采样成本</th><th>主要问题</th></tr>
+      <tr><td>自编码器 AE</td><td>映射 x→z→x</td><td>不能,潜空间没有分布</td><td>重建清晰</td><td class="num">1 次解码</td><td>潜空间有空洞</td></tr>
+      <tr><td>VAE</td><td>近似 p(z|x) 与 p(x|z)</td><td>能</td><td>偏模糊</td><td class="num">1 次解码</td><td>后验平均</td></tr>
+      <tr><td>GAN</td><td>G: z→x 与 D 的对抗</td><td>能</td><td>锐利</td><td class="num">1 次前向</td><td>模式崩塌、难训</td></tr>
+      <tr><td>扩散</td><td>每步噪声 ε_θ(x_t,t)</td><td>能</td><td>锐利、多样</td><td class="num">20–1000 次前向</td><td>采样慢</td></tr>
+    </table>
+  </div>
+
+  <p>下面是把扩散训练写成 PyTorch 的样子。图像被拉成一维向量,去噪器换成三层 MLP;真实实现把 MLP 换成 U-Net,训练目标一字不改。</p>
+
+  <div class="code-wrap"><div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div><pre class="code"><code>import itertools, torch, torch.nn as nn
+
+T = 1000
+beta = torch.linspace(1e-4, 0.02, T)          # 每步加多少噪声
+abar = torch.cumprod(1.0 - beta, dim=0)       # ᾱ_t: 到第 t 步累计保留的信号系数
+
+class Denoiser(nn.Module):
+    def __init__(self, size=16, hidden=128):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(size * size + 1, hidden), nn.SiLU(),
+            nn.Linear(hidden, hidden), nn.SiLU(),
+            nn.Linear(hidden, size * size),
+        )
+    def forward(self, x, t):                   # x: [B, 256], t: [B]
+        return self.net(torch.cat([x, t[:, None]], dim=1))
+
+model = Denoiser()
+opt = torch.optim.Adam(model.parameters(), lr=2e-3)
+
+for step, (x0, _) in zip(range(20000), itertools.cycle(loader)):
+    x0 = x0.flatten(1)                          # 干净图: [B, 256]
+    t = torch.randint(0, T, (x0.shape[0],))
+    eps = torch.randn_like(x0)
+    ab = abar[t][:, None]
+    xt = ab.sqrt() * x0 + (1 - ab).sqrt() * eps
+    pred = model(xt, t.float() / T)
+    loss = ((eps - pred) ** 2).mean()
+    opt.zero_grad()
+    loss.backward()
+    opt.step()</code></pre></div>
+
+  <details class="fold"><summary>反向采样到底怎么走</summary><div class="fold-body">
+    <p>训练好 ε_θ 之后,DDIM 的每一步是:</p>
+    <div class="math"><var>x</var><sub>t−1</sub> = √<var>ᾱ</var><sub>t−1</sub> · <var>x̂</var><sub>0</sub> + √(1 − <var>ᾱ</var><sub>t−1</sub>) · <var>ε̂</var></div>
+    <p>其中 <code>x̂₀ = (x_t − √(1−ᾱ_t) · ε_θ(x_t,t)) / √(ᾱ_t)</code>,<code>ε̂ = (x_t − √(ᾱ_t) · x̂₀) / √(1−ᾱ_t)</code>。第一项把预测出的干净图按比例放回去,第二项补上剩余噪声。每一步都重复这个动作,噪声的方差逐级减小,轮廓就显现出来。</p>
+  </div></details>
+
+  <div class="quiz" data-id="q-11-3">
+    <p class="q">扩散模型的训练损失只是预测噪声的均方误差。这个选择带来的主要好处是什么?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="正好相反。扩散采样要几十到上千次网络前向;只需一次前向的是 GAN。均方误差损失不会改变采样步数。">它保证了采样只需要一次网络前向。</button>
+      <button class="opt" data-k="B" data-ok data-why="正确。每个训练样本都能被构造出来并回归,没有对抗平衡,训练稳定;这是扩散取代 GAN 成为主流的关键之一。">它把训练变成稳定的回归问题,每个样本都以加噪形式参与,不依赖对抗平衡。</button>
+      <button class="opt" data-k="C" data-why="扩散可以在像素空间或高维潜空间工作,不是 2 维。潜扩散压到 64×64×4,仍然是 16,384 维。">它把图像压缩到 2 维潜空间,所以计算量小。</button>
+      <button class="opt" data-k="D" data-why="前向加噪正是训练样本的来源。没有 x_t,网络就没有输入,也就没有可回归的目标。">它不需要前向加噪过程,可以直接从干净数据学分布。</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <div class="ch-foot">
+    <span class="state" data-state></span>
+    <span class="sp"></span>
+    <a class="btn" href="#ch-12-modality">下一章 →</a>
+  </div>
+</section>
+
+<script>
+(function(){
+  function matx(n, m, scale, rn){
+    const a = new Float32Array(n * m);
+    for (let i = 0; i < a.length; i++) a[i] = rn() * scale;
+    return a;
+  }
+  function hexRgb(h){
+    h = String(h).trim();
+    if (h.charAt(0) === '#') h = h.slice(1);
+    if (h.length === 3) h = h.charAt(0) + h.charAt(0) + h.charAt(1) + h.charAt(1) + h.charAt(2) + h.charAt(2);
+    const n = parseInt(h, 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+
+  defineDemo('d-11-latent', function(root){
+    const cv = root.querySelector('#cv-11-latent');
+    const s1 = root.querySelector('#s-11-z1');
+    const s2 = root.querySelector('#s-11-z2');
+    const o1 = root.querySelector('#o-11-z1');
+    const o2 = root.querySelector('#o-11-z2');
+    const statEl = root.querySelector('#p-11-stat');
+    const btn = root.querySelector('#b-11-retrain');
+
+    const D = 144, H = 40, L = 2, N = 12, COLS = 13, ROWS = 10;
+    const rng = NN.mulberry32(11);
+    function rn(){ return NN.randn(rng); }
+
+    const data = [];
+    function shapeImg(p, r){
+      const out = new Float32Array(D);
+      for (let y = 0; y < N; y++){
+        for (let x = 0; x < N; x++){
+          const dx = x + 0.5 - N / 2;
+          const dy = y + 0.5 - N / 2;
+          const d = Math.pow(Math.pow(Math.abs(dx / r), p) + Math.pow(Math.abs(dy / r), p), 1 / p);
+          out[y * N + x] = NN.clamp(Math.exp(-Math.pow((d - 1) / 0.20, 2)), 0, 1);
+        }
+      }
+      return out;
+    }
+    for (let i = 0; i < 500; i++){
+      const u = rng(), v = rng();
+      data.push(shapeImg(2 + 6 * u, 3.0 + 1.8 * v));
+    }
+
+    let W1, b1, W2, b2, W3, b3, W4, b4, params, adamM, adamV, gW1, gb1, gW2, gb2, gW3, gb3, gW4, gb4;
+    let adamT = 0, steps = 0, lossAvg = 0;
+
+    function resetNet(){
+      W1 = matx(H, D, Math.sqrt(2 / D), rn); b1 = new Float32Array(H);
+      W2 = matx(L, H, Math.sqrt(2 / H), rn); b2 = new Float32Array(L);
+      W3 = matx(H, L, Math.sqrt(2 / L), rn); b3 = new Float32Array(H);
+      W4 = matx(D, H, Math.sqrt(2 / H), rn); b4 = new Float32Array(D);
+      params = [W1, b1, W2, b2, W3, b3, W4, b4];
+      adamM = params.map(function(p){ return new Float32Array(p.length); });
+      adamV = params.map(function(p){ return new Float32Array(p.length); });
+      gW1 = new Float32Array(W1.length); gb1 = new Float32Array(H);
+      gW2 = new Float32Array(W2.length); gb2 = new Float32Array(L);
+      gW3 = new Float32Array(W3.length); gb3 = new Float32Array(H);
+      gW4 = new Float32Array(W4.length); gb4 = new Float32Array(D);
+      adamT = 0; steps = 0; lossAvg = 0;
+    }
+
+    function forwardAE(x){
+      const h = new Float32Array(H);
+      for (let i = 0; i < H; i++){
+        let s = b1[i];
+        for (let j = 0; j < D; j++) s += W1[i * D + j] * x[j];
+        h[i] = Math.tanh(s);
+      }
+      const z = new Float32Array(L);
+      for (let i = 0; i < L; i++){
+        let s = b2[i];
+        for (let j = 0; j < H; j++) s += W2[i * H + j] * h[j];
+        z[i] = s;
+      }
+      const h2 = new Float32Array(H);
+      for (let i = 0; i < H; i++){
+        let s = b3[i];
+        for (let j = 0; j < L; j++) s += W3[i * L + j] * z[j];
+        h2[i] = Math.tanh(s);
+      }
+      const out = new Float32Array(D);
+      for (let i = 0; i < D; i++){
+        let s = b4[i];
+        for (let j = 0; j < H; j++) s += W4[i * H + j] * h2[j];
+        out[i] = 1 / (1 + Math.exp(-s));
+      }
+      return {h:h, z:z, h2:h2, o:out};
+    }
+
+    function trainStep(bs, lr){
+      gW1.fill(0); gb1.fill(0); gW2.fill(0); gb2.fill(0);
+      gW3.fill(0); gb3.fill(0); gW4.fill(0); gb4.fill(0);
+      let loss = 0;
+      for (let k = 0; k < bs; k++){
+        const x = data[(rng() * data.length) | 0];
+        const c = forwardAE(x);
+        const dO = new Float32Array(D);
+        for (let i = 0; i < D; i++){
+          const diff = c.o[i] - x[i];
+          loss += diff * diff;
+          dO[i] = 2 * diff / D * c.o[i] * (1 - c.o[i]);
+        }
+        const dh2 = new Float32Array(H);
+        for (let i = 0; i < D; i++){
+          const go = dO[i];
+          gb4[i] += go;
+          for (let j = 0; j < H; j++){
+            gW4[i * H + j] += go * c.h2[j];
+            dh2[j] += W4[i * H + j] * go;
+          }
+        }
+        for (let j = 0; j < H; j++) dh2[j] *= 1 - c.h2[j] * c.h2[j];
+        const dz = new Float32Array(L);
+        for (let i = 0; i < H; i++){
+          const go = dh2[i];
+          gb3[i] += go;
+          for (let j = 0; j < L; j++){
+            gW3[i * L + j] += go * c.z[j];
+            dz[j] += W3[i * L + j] * go;
+          }
+        }
+        const dh = new Float32Array(H);
+        for (let i = 0; i < L; i++){
+          const go = dz[i];
+          gb2[i] += go;
+          for (let j = 0; j < H; j++){
+            gW2[i * H + j] += go * c.h[j];
+            dh[j] += W2[i * H + j] * go;
+          }
+        }
+        for (let j = 0; j < H; j++) dh[j] *= 1 - c.h[j] * c.h[j];
+        for (let i = 0; i < H; i++){
+          const go = dh[i];
+          gb1[i] += go;
+          for (let j = 0; j < D; j++) gW1[i * D + j] += go * x[j];
+        }
+      }
+      const grads = [gW1, gb1, gW2, gb2, gW3, gb3, gW4, gb4];
+      adamT++;
+      const b1a = 0.9, b2a = 0.999, eps = 1e-8;
+      for (let k = 0; k < params.length; k++){
+        const p = params[k], g = grads[k], m = adamM[k], v = adamV[k];
+        for (let i = 0; i < p.length; i++){
+          const gi = g[i] / bs;
+          m[i] = b1a * m[i] + (1 - b1a) * gi;
+          v[i] = b2a * v[i] + (1 - b2a) * gi * gi;
+          const mh = m[i] / (1 - Math.pow(b1a, adamT));
+          const vh = v[i] / (1 - Math.pow(b2a, adamT));
+          p[i] -= lr * mh / (Math.sqrt(vh) + eps);
+        }
+      }
+      steps++;
+      loss = loss / (bs * D);
+      lossAvg = steps === 1 ? loss : 0.95 * lossAvg + 0.05 * loss;
+      return loss;
+    }
+
+    function encode(x){
+      const c = forwardAE(x);
+      return [c.z[0], c.z[1]];
+    }
+
+    function decode(z1v, z2v){
+      const z = [z1v, z2v];
+      const h2 = new Float32Array(H);
+      for (let i = 0; i < H; i++){
+        let s = b3[i];
+        for (let j = 0; j < L; j++) s += W3[i * L + j] * z[j];
+        h2[i] = Math.tanh(s);
+      }
+      const out = new Float32Array(D);
+      for (let i = 0; i < D; i++){
+        let s = b4[i];
+        for (let j = 0; j < H; j++) s += W4[i * H + j] * h2[j];
+        out[i] = 1 / (1 + Math.exp(-s));
+      }
+      return out;
+    }
+
+    let zLo = [-3, -3], zHi = [3, 3];
+    function computeRange(){
+      const lo = [1e9, 1e9], hi = [-1e9, -1e9];
+      for (let i = 0; i < data.length; i++){
+        const z = encode(data[i]);
+        for (let k = 0; k < 2; k++){
+          if (z[k] < lo[k]) lo[k] = z[k];
+          if (z[k] > hi[k]) hi[k] = z[k];
+        }
+      }
+      for (let k = 0; k < 2; k++){
+        const span = Math.max(1, hi[k] - lo[k]);
+        zLo[k] = lo[k] - span * 0.06;
+        zHi[k] = hi[k] + span * 0.06;
+      }
+      s1.min = zLo[0].toFixed(2); s1.max = zHi[0].toFixed(2);
+      s2.min = zLo[1].toFixed(2); s2.max = zHi[1].toFixed(2);
+      s1.step = ((zHi[0] - zLo[0]) / 300).toFixed(3);
+      s2.step = ((zHi[1] - zLo[1]) / 300).toFixed(3);
+    }
+
+    const curZ = [0, 0];
+    function setZ(a, b){
+      curZ[0] = NN.clamp(a, zLo[0], zHi[0]);
+      curZ[1] = NN.clamp(b, zLo[1], zHi[1]);
+      s1.value = curZ[0];
+      s2.value = curZ[1];
+      o1.textContent = NN.fmt(curZ[0], 2);
+      o2.textContent = NN.fmt(curZ[1], 2);
+      dirty = true;
+    }
+
+    let view = {w:0, h:0, gx:0, gy:0, tile:0};
+    let dirty = true, frame = 0;
+
+    function updateStat(){
+      statEl.textContent = '损失 ' + lossAvg.toFixed(4) + ' · ' + steps + ' 步';
+    }
+
+    function draw(){
+      const f = NN.fitCanvas(cv, 340);
+      const ctx = f.ctx, w = f.w, h = f.h;
+      ctx.clearRect(0, 0, w, h);
+      const rgb = hexRgb(NN.token('--ink', '#0e1a28'));
+      const accent = NN.token('--accent', '#1f4fd1');
+      const muted = NN.token('--muted', '#68798c');
+      const line = NN.token('--line', '#cbd7e3');
+      const pad = 10, topPad = 20, botPad = 18;
+      const previewW = NN.clamp(w * 0.18, 62, 118);
+      let tile = Math.min((w - pad * 2 - previewW - 14) / COLS, (h - topPad - botPad) / ROWS);
+      tile = Math.max(8, tile);
+      const gridW = tile * COLS, gridH = tile * ROWS;
+      const gx = (w - (gridW + 14 + previewW)) / 2;
+      const gy = topPad + Math.max(0, (h - topPad - botPad - gridH) / 2);
+      view = {w:w, h:h, gx:gx, gy:gy, tile:tile};
+
+      for (let r = 0; r < ROWS; r++){
+        for (let c = 0; c < COLS; c++){
+          const z1v = zLo[0] + (zHi[0] - zLo[0]) * (c / (COLS - 1));
+          const z2v = zHi[1] - (zHi[1] - zLo[1]) * (r / (ROWS - 1));
+          const im = decode(z1v, z2v);
+          for (let py = 0; py < N; py++){
+            for (let px = 0; px < N; px++){
+              const v = im[py * N + px];
+              if (v < 0.03) continue;
+              ctx.fillStyle = 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',' + v.toFixed(3) + ')';
+              ctx.fillRect(gx + c * tile + px * tile / N, gy + r * tile + py * tile / N, tile / N + 0.7, tile / N + 0.7);
+            }
+          }
+        }
+      }
+
+      const cc = NN.clamp(Math.round((curZ[0] - zLo[0]) / (zHi[0] - zLo[0]) * (COLS - 1)), 0, COLS - 1);
+      const rr = NN.clamp(Math.round((zHi[1] - curZ[1]) / (zHi[1] - zLo[1]) * (ROWS - 1)), 0, ROWS - 1);
+      ctx.strokeStyle = accent;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(gx + cc * tile + 1, gy + rr * tile + 1, tile - 2, tile - 2);
+      ctx.globalAlpha = 0.25;
+      ctx.beginPath();
+      ctx.moveTo(gx + cc * tile + tile / 2, gy);
+      ctx.lineTo(gx + cc * tile + tile / 2, gy + gridH);
+      ctx.moveTo(gx, gy + rr * tile + tile / 2);
+      ctx.lineTo(gx + gridW, gy + rr * tile + tile / 2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+
+      ctx.fillStyle = muted;
+      ctx.font = '10px monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText('z₂ 高', gx, gy - 6);
+      ctx.textAlign = 'right';
+      ctx.fillText('z₁ 低 → 高', gx + gridW, gy + gridH + 14);
+
+      const size = Math.min(previewW, gridH);
+      const px0 = gx + gridW + 14;
+      const py0 = gy + (gridH - size) / 2;
+      ctx.strokeStyle = line;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(px0 - 1, py0 - 1, size + 2, size + 2);
+      const pim = decode(curZ[0], curZ[1]);
+      for (let py = 0; py < N; py++){
+        for (let px = 0; px < N; px++){
+          const v = pim[py * N + px];
+          if (v < 0.03) continue;
+          ctx.fillStyle = 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',' + v.toFixed(3) + ')';
+          ctx.fillRect(px0 + px * size / N, py0 + py * size / N, size / N + 0.8, size / N + 0.8);
+        }
+      }
+      ctx.fillStyle = muted;
+      ctx.font = '10px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('z = (' + NN.fmt(curZ[0], 2) + ', ' + NN.fmt(curZ[1], 2) + ')', px0 + size / 2, py0 + size + 14);
+    }
+
+    function onPointer(e){
+      if (!view.tile) return;
+      const rect = cv.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const x = (e.clientX - rect.left) * (view.w / rect.width);
+      const y = (e.clientY - rect.top) * (view.h / rect.height);
+      const c = Math.floor((x - view.gx) / view.tile);
+      const r = Math.floor((y - view.gy) / view.tile);
+      if (c < 0 || c >= COLS || r < 0 || r >= ROWS) return;
+      const z1v = zLo[0] + (zHi[0] - zLo[0]) * (c / (COLS - 1));
+      const z2v = zHi[1] - (zHi[1] - zLo[1]) * (r / (ROWS - 1));
+      setZ(z1v, z2v);
+    }
+    cv.addEventListener('pointermove', onPointer);
+    cv.addEventListener('pointerdown', onPointer);
+    s1.addEventListener('input', function(){ setZ(+s1.value, curZ[1]); });
+    s2.addEventListener('input', function(){ setZ(curZ[0], +s2.value); });
+
+    function pretrain(){
+      for (let i = 0; i < 60; i++) trainStep(16, 0.01);
+      computeRange();
+      setZ((zLo[0] + zHi[0]) / 2, (zLo[1] + zHi[1]) / 2);
+      updateStat();
+    }
+
+    resetNet();
+    pretrain();
+    draw();
+
+    btn.addEventListener('click', function(){
+      resetNet();
+      pretrain();
+      dirty = true;
+    });
+
+    window.Theme.on(function(){ dirty = true; });
+
+    const ticker = NN.createTicker(root, function(){
+      trainStep(12, 0.01);
+      frame++;
+      if (frame % 15 === 0){
+        updateStat();
+        dirty = true;
+      }
+      if (dirty){ draw(); dirty = false; }
+    });
+    ticker.start();
+  });
+
+  defineDemo('d-11-diffusion', function(root){
+    const cvA = root.querySelector('#cv-11-noisy');
+    const cvB = root.querySelector('#cv-11-denoise');
+    const sT = root.querySelector('#s-11-t');
+    const oT = root.querySelector('#o-11-t');
+    const bPlay = root.querySelector('#b-11-play');
+    const bShape = root.querySelector('#b-11-shape');
+    const dstat = root.querySelector('#p-11-dstat');
+    const dstep = root.querySelector('#p-11-dstep');
+
+    const N = 16, D = 256, IN = D + 2, H = 64, STEPS = 48;
+    const rng = NN.mulberry32(21);
+    function rn(){ return NN.randn(rng); }
+
+    function ringImg(rad, cx, cy){
+      const out = new Float32Array(D);
+      for (let y = 0; y < N; y++){
+        for (let x = 0; x < N; x++){
+          const dx = x + 0.5 - N / 2 - cx;
+          const dy = y + 0.5 - N / 2 - cy;
+          const d = Math.sqrt(dx * dx + dy * dy);
+          out[y * N + x] = NN.clamp(Math.exp(-Math.pow(d - rad, 2) / (2 * 0.8 * 0.8)), 0, 1);
+        }
+      }
+      return out;
+    }
+
+    const data = [];
+    for (let i = 0; i < 320; i++){
+      data.push(ringImg(3.2 + 2.0 * rng(), (rng() - 0.5) * 1.2, (rng() - 0.5) * 1.2));
+    }
+
+    let W1, b1, W2, b2, params, adamM, adamV, gW1, gb1, gW2, gb2, dO, dh;
+    let adamT = 0, trainSteps = 0, lossAvg = 0;
+
+    function resetNet(){
+      W1 = matx(H, IN, Math.sqrt(2 / IN), rn); b1 = new Float32Array(H);
+      W2 = matx(D, H, Math.sqrt(2 / H), rn); b2 = new Float32Array(D);
+      params = [W1, b1, W2, b2];
+      adamM = params.map(function(p){ return new Float32Array(p.length); });
+      adamV = params.map(function(p){ return new Float32Array(p.length); });
+      gW1 = new Float32Array(W1.length); gb1 = new Float32Array(H);
+      gW2 = new Float32Array(W2.length); gb2 = new Float32Array(D);
+      dO = new Float32Array(D); dh = new Float32Array(H);
+      adamT = 0; trainSteps = 0; lossAvg = 0;
+    }
+
+    function abOf(u){
+      const c = Math.cos((u + 0.008) / 1.008 * Math.PI / 2);
+      return c * c;
+    }
+
+    function forward(x, u){
+      const inp = new Float32Array(IN);
+      for (let j = 0; j < D; j++) inp[j] = x[j];
+      inp[D] = u;
+      inp[D + 1] = abOf(u);
+      const h = new Float32Array(H);
+      for (let i = 0; i < H; i++){
+        let s = b1[i];
+        for (let j = 0; j < IN; j++) s += W1[i * IN + j] * inp[j];
+        h[i] = Math.tanh(s);
+      }
+      const o = new Float32Array(D);
+      for (let i = 0; i < D; i++){
+        let s = b2[i];
+        for (let j = 0; j < H; j++) s += W2[i * H + j] * h[j];
+        o[i] = 1 / (1 + Math.exp(-s));
+      }
+      return {h:h, o:o};
+    }
+
+    function trainStep(bs, lr){
+      gW1.fill(0); gb1.fill(0); gW2.fill(0); gb2.fill(0);
+      dh.fill(0);
+      let loss = 0;
+      for (let k = 0; k < bs; k++){
+        const x0 = data[(rng() * data.length) | 0];
+        const u = rng();
+        const ab = abOf(u);
+        const sa = Math.sqrt(ab), sn = Math.sqrt(1 - ab);
+        const xt = new Float32Array(D);
+        for (let j = 0; j < D; j++) xt[j] = sa * x0[j] + sn * rn();
+        const c = forward(xt, u);
+        for (let j = 0; j < D; j++){
+          const diff = c.o[j] - x0[j];
+          loss += diff * diff;
+          dO[j] = 2 * diff / D * c.o[j] * (1 - c.o[j]);
+        }
+        dh.fill(0);
+        for (let i = 0; i < D; i++){
+          const go = dO[i];
+          gb2[i] += go;
+          for (let j = 0; j < H; j++){
+            gW2[i * H + j] += go * c.h[j];
+            dh[j] += W2[i * H + j] * go;
+          }
+        }
+        for (let i = 0; i < H; i++){
+          const go = dh[i] * (1 - c.h[i] * c.h[i]);
+          gb1[i] += go;
+          for (let j = 0; j < IN; j++){
+            const v = j < D ? xt[j] : (j === D ? u : ab);
+            gW1[i * IN + j] += go * v;
+          }
+        }
+      }
+      const grads = [gW1, gb1, gW2, gb2];
+      adamT++;
+      const b1a = 0.9, b2a = 0.999, eps = 1e-8;
+      for (let k = 0; k < params.length; k++){
+        const p = params[k], g = grads[k], m = adamM[k], v = adamV[k];
+        for (let i = 0; i < p.length; i++){
+          const gi = g[i] / bs;
+          m[i] = b1a * m[i] + (1 - b1a) * gi;
+          v[i] = b2a * v[i] + (1 - b2a) * gi * gi;
+          const mh = m[i] / (1 - Math.pow(b1a, adamT));
+          const vh = v[i] / (1 - Math.pow(b2a, adamT));
+          p[i] -= lr * mh / (Math.sqrt(vh) + eps);
+        }
+      }
+      trainSteps++;
+      loss = loss / (bs * D);
+      lossAvg = trainSteps === 1 ? loss : 0.98 * lossAvg + 0.02 * loss;
+      return loss;
+    }
+
+    resetNet();
+    for (let i = 0; i < 60; i++) trainStep(8, 0.002);
+
+    let x0 = data[(rng() * data.length) | 0].slice();
+    let epsFixed = new Float32Array(D);
+    for (let j = 0; j < D; j++) epsFixed[j] = rn();
+    let tVal = 0.45;
+
+    function sampleOnce(){
+      const x = new Float32Array(D);
+      for (let j = 0; j < D; j++) x[j] = rn();
+      for (let k = STEPS; k >= 1; k--){
+        const u = k / STEPS, up = (k - 1) / STEPS;
+        const pred = forward(x, u).o;
+        const abt = abOf(u), abp = abOf(up);
+        const sa = Math.sqrt(abt);
+        const sn = Math.sqrt(Math.max(1e-6, 1 - abt));
+        for (let j = 0; j < D; j++){
+          const ep = (x[j] - sa * pred[j]) / sn;
+          x[j] = Math.sqrt(abp) * pred[j] + Math.sqrt(1 - abp) * ep;
+        }
+      }
+      return x;
+    }
+
+    let last = sampleOnce();
+    let playing = false, sampleX = null, sampleStep = 0, frame = 0;
+
+    function xtAt(t){
+      const ab = abOf(t);
+      const sa = Math.sqrt(ab), sn = Math.sqrt(1 - ab);
+      const out = new Float32Array(D);
+      for (let j = 0; j < D; j++) out[j] = sa * x0[j] + sn * epsFixed[j];
+      return out;
+    }
+
+    function drawPanel(cv, arr, label){
+      const f = NN.fitCanvas(cv, 220);
+      const ctx = f.ctx, w = f.w, h = f.h;
+      ctx.clearRect(0, 0, w, h);
+      const rgb = hexRgb(NN.token('--ink', '#0e1a28'));
+      const muted = NN.token('--muted', '#68798c');
+      const size = Math.min(w, h) - 30;
+      const ox = (w - size) / 2, oy = (h - size) / 2 + 7;
+      for (let y = 0; y < N; y++){
+        for (let x = 0; x < N; x++){
+          let v = arr[y * N + x];
+          v = v < 0 ? 0 : v > 1 ? 1 : v;
+          if (v < 0.02) continue;
+          ctx.fillStyle = 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',' + v.toFixed(3) + ')';
+          ctx.fillRect(ox + x * size / N, oy + y * size / N, size / N + 0.6, size / N + 0.6);
+        }
+      }
+      ctx.fillStyle = muted;
+      ctx.font = '11px monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText(label, 8, 15);
+    }
+
+    function drawForward(){
+      drawPanel(cvA, xtAt(tVal), '前向 q(x_t|x_0) · t=' + tVal.toFixed(2));
+    }
+    function drawReverse(){
+      if (playing){
+        drawPanel(cvB, sampleX, '反向采样 · ' + (STEPS - sampleStep) + '/' + STEPS + ' 步');
+      } else {
+        drawPanel(cvB, last, '反向采样 · 完成 ' + STEPS + ' 步');
+      }
+    }
+    function updateStats(){
+      dstat.textContent = '去噪器 ' + trainSteps + ' 步 · 损失 ' + lossAvg.toFixed(4);
+      dstep.textContent = playing ? ('第 ' + (STEPS - sampleStep) + '/' + STEPS + ' 步') : ('完成 ' + STEPS + ' 步');
+    }
+
+    sT.addEventListener('input', function(){
+      tVal = +sT.value;
+      oT.textContent = tVal.toFixed(2);
+      drawForward();
+    });
+
+    bShape.addEventListener('click', function(){
+      x0 = data[(rng() * data.length) | 0].slice();
+      for (let j = 0; j < D; j++) epsFixed[j] = rn();
+      drawForward();
+    });
+
+    bPlay.addEventListener('click', function(){
+      if (playing) return;
+      sampleX = new Float32Array(D);
+      for (let j = 0; j < D; j++) sampleX[j] = rn();
+      playing = true;
+      sampleStep = STEPS;
+      bPlay.disabled = true;
+      bPlay.textContent = '采样中…';
+      drawReverse();
+      updateStats();
+    });
+
+    window.Theme.on(function(){ drawForward(); drawReverse(); });
+
+    drawForward();
+    drawReverse();
+    updateStats();
+
+    const ticker = NN.createTicker(root, function(){
+      if (playing){
+        frame++;
+        if (frame % 2 !== 0) return;
+        const u = sampleStep / STEPS, up = (sampleStep - 1) / STEPS;
+        const pred = forward(sampleX, u).o;
+        const abt = abOf(u), abp = abOf(up);
+        const sa = Math.sqrt(abt);
+        const sn = Math.sqrt(Math.max(1e-6, 1 - abt));
+        for (let j = 0; j < D; j++){
+          const ep = (sampleX[j] - sa * pred[j]) / sn;
+          sampleX[j] = Math.sqrt(abp) * pred[j] + Math.sqrt(1 - abp) * ep;
+        }
+        sampleStep--;
+        if (sampleStep <= 0){
+          playing = false;
+          last = sampleX.slice();
+          bPlay.disabled = false;
+          bPlay.textContent = '再采样一次';
+        }
+        drawReverse();
+        updateStats();
+      } else {
+        frame++;
+        trainStep(8, 0.002);
+        if (frame % 30 === 0) updateStats();
+      }
+    });
+    ticker.start();
+  });
+})();
+</script>

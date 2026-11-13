@@ -1,0 +1,695 @@
+<section class="ch" id="ch-ap-b" data-num="B" data-title="PyTorch 对照">
+  <header class="ch-head">
+    <div class="ch-eyebrow"><span class="dot"></span>附录 B · 框架</div>
+    <h1 class="ch-title">PyTorch 对照</h1>
+    <p class="ch-sub">本书手写的每个概念,在 PyTorch 里对应哪一行;以及训练循环里最容易犯的三个错。</p>
+    <div class="ch-rule"></div>
+  </header>
+
+  <div class="prereq"><b>读前</b><span>第 1 章神经元与 σ、第 3 章损失(softmax/交叉熵)与梯度下降、第 4 章多层网络、第 5 章反向传播、第 6 章训练循环、第 7 章 L2 正则化与 λ;符号卡住时回查附录 A</span><b>可跳过</b><span>B.5 的自定义 Dataset 写法、B.8 的断点续训细节可跳过,不影响 B.6、B.7 的主线;各代码块可先只看注释</span></div>
+
+  <p class="lead">前面每一章,你都在用几十行手写代码做同一件事:算前向、推梯度、更新参数。PyTorch 把这些动作收进四个对象——张量、autograd、Module、DataLoader。这一章不引入新概念,只做翻译:书里的每一行伪代码,在框架里长什么样,以及新手最常踩的坑在哪里。</p>
+
+  <h3><span class="h3-n">B.1</span>一张全景对照表</h3>
+  <p>先看总表。左边是本书手写的做法,右边是 PyTorch 的对应物。后半章会把每一行展开,你可以把这张表当成查字典的索引。表里没有魔法:框架的每个 API 都能还原成你写过的循环,它只是把循环搬进了 C++ 和 CUDA,顺手替你管理显存与求导。</p>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>概念</th><th>本书手写</th><th>PyTorch 对应</th></tr></thead>
+      <tbody>
+        <tr><td>神经元加权和</td><td class="num">z = Σ w<sub>i</sub>x<sub>i</sub> + b<br><span>Σ 是求和(sum)</span></td><td><code>nn.Linear(in, out)</code>(全连接层)</td></tr>
+        <tr><td>激活函数</td><td class="num">max(0,z) / 1/(1+e<sup>-z</sup>)</td><td><code>nn.ReLU()</code> / <code>nn.Sigmoid()</code></td></tr>
+        <tr><td>层的堆叠</td><td>数组加循环</td><td><code>nn.Sequential(...)</code></td></tr>
+        <tr><td>全部参数</td><td>自己维护 W、b</td><td><code>model.parameters()</code></td></tr>
+        <tr><td>前向</td><td>手写 forward 函数</td><td><code>model(x)</code></td></tr>
+        <tr><td>反向</td><td>手推链式法则</td><td><code>loss.backward()</code></td></tr>
+        <tr><td>梯度下降</td><td class="num">w ← w - lr·grad<br><span>← 是赋值(assign)</span></td><td><code>optimizer.step()</code></td></tr>
+        <tr><td>清空梯度</td><td>手动把 grad 置零</td><td><code>optimizer.zero_grad()</code></td></tr>
+        <tr><td>小批量(mini-batch)</td><td>自己切片</td><td><code>DataLoader</code></td></tr>
+        <tr><td>分类损失</td><td>softmax 加交叉熵</td><td><code>nn.CrossEntropyLoss()</code></td></tr>
+        <tr><td>训练与推理模式</td><td>手动开关 dropout(随机丢弃)</td><td><code>model.train()</code> / <code>model.eval()</code></td></tr>
+        <tr><td>保存</td><td>自己写文件</td><td><code>state_dict</code>(参数字典)加 <code>torch.save</code></td></tr>
+        <tr><td>设备</td><td>无</td><td><code>.to('cuda')</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3><span class="h3-n">B.2</span>张量:形状、类型、设备</h3>
+  <p>张量(tensor)是 PyTorch 的基本数据单位:一个多维数组,外加两个标签——数据类型(dtype)和设备(device)。形状(shape)决定它能参与哪些运算,数据类型决定每个数占几字节,设备决定它住在内存还是显存。调试 PyTorch 程序时,先打印这三个属性,通常比读十行报错更快。</p>
+  <p>三个最常见的形状约定:全连接层输入是 <code>(batch, features)</code>;图像是 <code>(batch, channels, height, width)</code>;序列是 <code>(batch, time, features)</code>。一个 32 张 RGB 图片、224×224 的批次,形状是 <code>(32, 3, 224, 224)</code>,元素总数 32×3×224×224=4,816,896。float32 每个数占 4 字节,这一批就是 19,267,584 字节,约 18.4 MiB。换成一万张图,约 5.6 GiB,训练还没开始,数据就已经放不下。</p>
+  <p>维度顺序不是审美问题。<code>nn.Linear</code> 只把最后一维当特征,前面所有维度都当 batch。若你把 <code>(32, 224, 224, 3)</code> 直接喂进去,它会以为每个样本只有 3 个特征、一共有 32×224×224 个样本,要么报形状错误,要么算出一堆看似正常的垃圾。图像从 HWC(高×宽×通道)转到 CHW(通道×高×宽)用 <code>permute(0, 3, 1, 2)</code>;把 28×28 拉平成 784 用 <code>flatten(1)</code> 或 <code>view(x.size(0), -1)</code>。</p>
+  <p>广播(broadcasting)让形状不同的张量也能相加。<code>(64, 1)</code> 加 <code>(1, 128)</code> 得到 <code>(64, 128)</code>:前者沿列复制 128 份,后者沿行复制 64 份。偏置 b 的形状是 <code>(out,)</code>,加到 <code>(batch, out)</code> 上时自动广播到每一行。广播只在不匹配的维度为 1 时发生,否则直接报错,不会替你猜。</p>
+  <p><code>view</code> 只改变解读方式,要求张量在内存里连续;先做 <code>permute</code> 或 <code>transpose</code> 之后,张量通常不再连续,直接 <code>view</code> 会报 view size is not compatible with input tensor's size and stride。这时用 <code>reshape</code>,或者先调 <code>.contiguous()</code> 再 view。连续与否还影响速度:连续内存的矩阵乘法能整块读,跨步访问会让同样的计算慢上几倍。</p>
+  <p>数据类型通常用 float32。半精度 float16 或 bfloat16(16 位浮点)把显存和带宽减半,配合自动混合精度(AMP)能明显提速,但纯半精度训练容易数值不稳。类别标签必须用 int64,因为交叉熵要求标签是 long,不是 float。设备方面,模型和数据必须在同一块设备上:<code>model.to('cuda')</code> 之后,输入也要 <code>.to('cuda')</code>,否则报 Expected all tensors to be on the same device。</p>
+
+  <div class="code-wrap"><div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div><pre class="code"><code>import torch
+
+x = torch.randn(64, 3, 224, 224)      # (batch, channel, height, width)
+print(x.shape, x.dtype, x.device)     # torch.Size([64, 3, 224, 224]) torch.float32 cpu
+
+flat = x.flatten(1)                   # 每张图拉成一行
+print(flat.shape)                     # (64, 150528)
+
+b = torch.zeros(128)                  # 偏置
+z = torch.zeros(64, 128) + b          # 广播成 (64, 128)
+print(z.shape)                        # torch.Size([64, 128])</code></pre></div>
+
+  <h3><span class="h3-n">B.3</span>autograd:框架替你算反向传播</h3>
+  <p>自动求导(autograd)是 PyTorch 替你做的反向传播(backpropagation)。你只要把参与运算的张量标上 <code>requires_grad=True</code>(要求记录梯度),前向过程中的每一步都会被记进计算图(computational graph);调用 <code>loss.backward()</code> 时,它从损失出发沿图反向走一遍,把链式法则乘到每个叶子节点,结果写进 <code>.grad</code>。</p>
+  <p>用最简单的单神经元链算一遍。w=0.8,x=1.5,b=-0.2,目标 y=1。u=w·x+b=0.8×1.5-0.2=1.0; p=σ(1)=0.7311; L=-ln p=0.3133。这里 σ 是 S 型函数(sigmoid),把任意数压到 0 到 1 之间。反向时 dL/dp=-1/p=-1.368; sigmoid 的局部斜率 p(1-p)=0.1966; 两者相乘得 dL/du=-0.2689。又因为 u 对 w 的斜率是 x=1.5,所以 dL/dw=-0.2689×1.5=-0.4034; dL/db=-0.2689; dL/dx=-0.2689×0.8=-0.2151。</p>
+  <p>巧的是,sigmoid 加二元交叉熵的梯度能化简成 p-y=0.7311-1=-0.2689,正好是 dL/du。框架不会替你消掉这一项,它只是忠实地把两个局部导数乘起来;数值上你会看到 -0.2689,和手算完全一致。下面的演示把这条链画成图,你可以逐个节点看梯度怎么从右往左传;图里的 ∂L/∂w 读「偏 L 偏 w」,∂ 是偏导(partial derivative)。</p>
+
+  <div class="code-wrap"><div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div><pre class="code"><code>import torch
+
+w = torch.tensor(0.8, requires_grad=True)
+x = torch.tensor(1.5)
+b = torch.tensor(-0.2, requires_grad=True)
+
+u = w * x + b
+p = torch.sigmoid(u)
+loss = -torch.log(p)     # 目标 y = 1,所以是 -log(p)
+loss.backward()
+
+print(u.item(), p.item(), loss.item())   # 1.0 0.7310586 0.3132617
+print(w.grad.item(), b.grad.item())      # -0.4034 -0.2689
+print(x.grad)                            # None:x 没标 requires_grad</code></pre></div>
+
+  <p>三个细节决定你会不会用错。第一,<code>.grad</code> 是累加的,不是覆盖的;每次反向之前要清空,通常由 <code>optimizer.zero_grad()</code> 完成。第二,<code>backward()</code> 默认只能对标量调用;若损失是向量,要传 gradient 参数说明每个分量怎么加权。第三,推理时用 <code>torch.no_grad()</code> 或 <code>@torch.no_grad()</code>,否则框架仍会建图,白白吃显存。想把一个张量从图里摘出来用 <code>.detach()</code>;想转成 Python 数字用 <code>.item()</code>。</p>
+  <p>新版 PyTorch 的 <code>zero_grad</code> 默认 <code>set_to_none=True</code>,直接把 <code>.grad</code> 设成 None,而不是写 0;下一次 backward 再分配内存,省掉一次全参数遍历,也省一块显存。若你依赖 <code>.grad</code> 的数值做调试,记得先判断它是否为 None。另一个小习惯:打印梯度用 <code>.norm().item()</code>(norm 是向量长度),不要直接 print 整个张量,几百万元素会把终端刷爆。</p>
+
+  <div class="demo" id="d-ap-b-autograd">
+    <div class="demo-bar"><span class="live">交互</span><span>逐节点反向传播</span><span class="sp"></span><span class="tag" id="tag-ap-b-auto">前向已算好</span></div>
+    <div class="demo-body">
+      <div class="math" id="m-ap-b-chain">u = w·x + b = 1.000　　p = σ(u) = 0.731　　L = -ln p = 0.313</div>
+      <div class="canvas-wrap"><canvas id="cv-ap-b-autograd" height="300"></canvas></div>
+      <div class="stat-row">
+        <div class="stat"><b id="v-ap-b-u">1.000</b><span>u = w·x + b</span></div>
+        <div class="stat"><b id="v-ap-b-p">0.731</b><span>p = σ(u)</span></div>
+        <div class="stat"><b id="v-ap-b-loss">0.313</b><span>L = -ln p</span></div>
+        <div class="stat"><b id="v-ap-b-gw">待反向</b><span>∂L/∂w</span></div>
+      </div>
+      <div class="controls">
+        <div class="ctl"><label for="s-ap-b-w">w <output id="o-ap-b-w">0.80</output></label><input id="s-ap-b-w" type="range" min="0.1" max="1.5" step="0.05" value="0.8"></div>
+        <div class="ctl"><label for="s-ap-b-x">x <output id="o-ap-b-x">1.50</output></label><input id="s-ap-b-x" type="range" min="0.5" max="3" step="0.1" value="1.5"></div>
+        <div class="ctl"><label for="s-ap-b-b">b <output id="o-ap-b-b">-0.20</output></label><input id="s-ap-b-b" type="range" min="-1" max="1" step="0.1" value="-0.2"></div>
+        <button class="btn primary" id="b-ap-b-back">反向一步</button>
+        <button class="btn" id="b-ap-b-reset">重算前向</button>
+      </div>
+    </div>
+    <div class="demo-hint">打开时前向值已经算好。点“反向一步”,梯度会从 L 开始,按 ∂L/∂节点 的顺序逐个出现在方框下方;边上标的是这一步的局部斜率。拖动 w、x、b 会重算前向并清空反向进度。</div>
+  </div>
+
+  <h3><span class="h3-n">B.4</span>nn.Module:层、参数与前向</h3>
+  <p>nn.Module 是层的容器,也是参数的登记处。你继承它(拿父类改造出新类),在 <code>__init__</code>(创建对象时自动运行的初始化函数)里把层创建成属性(挂在对象上的变量,用 self 访问),在 <code>forward</code>(前向函数)里写数据怎么流。PyTorch 通过 <code>__setattr__</code>(属性赋值时自动调用的钩子)自动把 <code>nn.Linear</code>、<code>nn.Conv2d</code> 这类子模块登记进 <code>parameters()</code>,所以你不用手动维护参数列表。调用 <code>model(x)</code> 时,框架实际执行的是 <code>model.forward(x)</code>,但不要直接调 forward,否则 hooks(钩子,插入执行的函数)之类的机制会被绕过。</p>
+  <p>算一个具体模型。输入 784 维,隐藏层 128,输出 10 类。第一层有 784×128+128=100,480 个参数,第二层有 128×10+10=1,290 个,合计 101,770 个。float32 下权重占 407,080 字节,约 398 KiB。这个数字很小,却足够在 MNIST(手写数字数据集)上做到 97% 以上的准确率。</p>
+  <p><code>nn.Sequential</code> 是省略 forward 的写法:把 <code>nn.Linear(784,128)</code>、<code>nn.ReLU()</code>、<code>nn.Linear(128,10)</code> 依次放进一个序列。它适合直线堆叠;一旦需要残差、分支或多输入,还是老老实实写 forward。层的默认初始化也不是随便取的:Linear 和 Conv2d 都用 Kaiming uniform(按输入个数缩放的均匀分布),偏置在 [-1/√fan_in, 1/√fan_in] 内均匀采样(fan_in 是每个输出连到的输入个数,√ 是开方)。这个初始化让每层输出的方差大致保持不变,是深层网络能训练起来的前提之一。</p>
+  <p>哪些东西会被算进参数量?只有 <code>nn.Parameter</code>(可训练参数的包装),或者 layer.weight 这类带 <code>requires_grad</code> 的张量。Buffer(比如批量归一化 BatchNorm 的 running_mean)会跟着 state_dict 保存,但不算参数,也不参与梯度更新;统计模型大小时要把两者分开。想冻结预训练层,遍历它的参数设 <code>requires_grad=False</code>,并把这些参数从优化器里排除,否则优化器仍会维护一份用不到的状态。</p>
+  <p>查看参数量时把每个参数的 <code>p.numel()</code>(元素个数)加起来,不要数 <code>state_dict()</code> 的条目:后者包含 buffer,也不区分是否可训练。两个数字在 BatchNorm 较多的网络里能差出几千,排查显存时容易误判。</p>
+
+  <div class="code-wrap"><div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div><pre class="code"><code>import torch.nn as nn
+
+class MLP(nn.Module):
+    def __init__(self):
+        super().__init__()   # 先初始化父类 nn.Module
+        self.fc1 = nn.Linear(784, 128)
+        self.fc2 = nn.Linear(128, 10)
+        self.act = nn.ReLU()
+
+    def forward(self, x):
+        x = x.flatten(1)           # (B, 784)
+        x = self.act(self.fc1(x))  # (B, 128)
+        return self.fc2(x)         # (B, 10)
+
+model = MLP()
+print(model)
+print(sum(p.numel() for p in model.parameters()))   # 101770</code></pre></div>
+
+  <h3><span class="h3-n">B.5</span>Dataset 与 DataLoader</h3>
+  <p>数据集(dataset)负责回答“第 i 个样本是什么”,数据加载器(data loader)负责“怎么凑成批、什么时候打乱、用几个进程读”。自定义 Dataset 只需实现两个方法:<code>__len__</code> 返回样本数,<code>__getitem__</code> 返回第 i 个样本的输入和标签。DataLoader 在它外面套一层,负责取样、拼批和并行预取。</p>
+  <p>具体到 MNIST:60,000 张训练图,batch_size=64,一个轮(epoch)有 ceil(60,000/64)=938 个批(ceil 是向上取整)。最后一批只有 32 张,除非设 <code>drop_last=True</code>。一个批的形状是 <code>(64, 1, 28, 28)</code>,float32 下 64×784×4=200,704 字节,约 196 KiB。这个尺寸正好能塞进 CPU 缓存,预处理的开销常常比模型本身还大。</p>
+  <p><code>shuffle=True</code> 只在训练集用;验证集和测试集打乱没有意义,还会让复现变麻烦。<code>num_workers</code> 是读数据的子进程数,0 表示在主进程读。SSD 上 2 到 4 通常够;开太多会抢 CPU,反而拖慢 GPU。用 CUDA 时 <code>pin_memory=True</code> 让数据页锁定,拷到显存更快。若数据已经在内存里、预处理很轻,<code>num_workers=0</code> 往往最快,因为省掉了进程间传数据的开销。</p>
+  <p><code>TensorDataset</code> 可以直接把几个张量按第一维对齐:<code>TensorDataset(X, Y)</code>,省掉上面的类。但如果要做数据增强、在线生成或从磁盘读图,还是自定义 Dataset。注意 <code>__getitem__</code> 返回的标签类型要和损失函数匹配:CrossEntropyLoss 要 int64,MSELoss 要 float32。</p>
+
+  <div class="code-wrap"><div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div><pre class="code"><code>from torch.utils.data import Dataset, DataLoader
+
+class MyData(Dataset):
+    def __init__(self, xs, ys):
+        self.xs, self.ys = xs, ys
+    def __len__(self):
+        return len(self.xs)
+    def __getitem__(self, i):
+        return self.xs[i], self.ys[i]
+
+loader = DataLoader(MyData(X, Y), batch_size=64,
+                    shuffle=True, num_workers=2, drop_last=False)
+
+xb, yb = next(iter(loader))
+print(xb.shape, yb.shape, yb.dtype)
+# torch.Size([64, 1, 28, 28]) torch.Size([64]) torch.int64</code></pre></div>
+
+  <h3><span class="h3-n">B.6</span>完整训练循环模板</h3>
+  <p>把前面的零件装起来,就是一个能直接跑的循环。下面这段是 MNIST 上最小可用的版本,每一行的顺序都有理由,建议先照抄,再改。真正训练时还会加学习率调度器(scheduler)、验证集早停和日志,但骨架不变。</p>
+
+  <div class="code-wrap"><div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div><pre class="code"><code>import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model = MLP().to(device)
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+loader = DataLoader(train_set, batch_size=64, shuffle=True)
+test_loader = DataLoader(test_set, batch_size=256, shuffle=False)
+
+for epoch in range(10):
+    model.train()                        # 打开 dropout / BatchNorm 的训练行为
+    running = 0.0
+    for xb, yb in loader:
+        xb, yb = xb.to(device), yb.to(device)
+        optimizer.zero_grad()            # 清掉上一批的梯度
+        logits = model(xb)               # 前向:(64, 10)
+        loss = criterion(logits, yb)     # 标量
+        loss.backward()                  # 反向:填充每个参数的 .grad
+        optimizer.step()                 # 更新:param -= lr * grad
+        running += loss.item() * xb.size(0)
+    train_loss = running / len(train_set)
+
+    model.eval()                         # 关闭 dropout,BN 用滑动统计
+    correct = total = 0
+    with torch.no_grad():                # 不建图,省显存
+        for xb, yb in test_loader:
+            xb, yb = xb.to(device), yb.to(device)
+            pred = model(xb).argmax(dim=1)   # argmax 取最大值的下标
+            correct += (pred == yb).sum().item()
+            total += yb.size(0)
+    print(f"epoch {epoch}: loss {train_loss:.4f}, acc {correct/total:.4f}")</code></pre></div>
+
+  <p>顺序不能乱。<code>zero_grad</code> 必须在 <code>backward</code> 之前:backward 是往 <code>.grad</code> 里加,不是赋值。logits 是未归一化的分数,CrossEntropyLoss 内部先做 log-softmax 再取正确类的负对数,所以不要再手动加一层 softmax,否则等于做了两次。用 <code>loss.item()</code> 取出 Python 浮点数来累加;如果直接把 loss 张量存进列表,整张计算图会被留住,显存会随着步数一路涨。</p>
+  <p>显存不够时先把小批量(mini-batch)改小,再考虑梯度累积(gradient accumulation):把一个小批量拆成 4 份,分别 forward 和 backward,四次之后再 <code>step()</code> 一次。等效批大小不变,峰值显存降到约四分之一,代价是训练慢一些。学习率要按等效批大小调整,不能直接照搬小批量的数值。</p>
+  <p><code>model.train()</code> 和 <code>model.eval()</code> 只切换行为,不改变参数。Dropout 在 train 时随机丢一部分激活,eval 时全部保留并按概率缩放;BatchNorm 在 train 时用当前批的均值方差,eval 时用训练期间累计的滑动平均。这两个层在两种模式下结果不同,所以训练前必须 train(),评估前必须 eval()。评估时还要配 <code>no_grad</code>:eval() 管层的行为,no_grad() 管要不要建计算图,它们是两件事。</p>
+  <p>调度器每轮调用一次 <code>scheduler.step()</code>,位置在 <code>optimizer.step()</code> 之后;顺序反了会跳过第一个学习率,新版 PyTorch 还会给出警告。日志里至少记录训练损失、验证损失和验证准确率;只看训练损失,你无法判断模型是在学习还是在背诵训练集。</p>
+
+  <div class="quiz" data-id="q-ap-b-1">
+    <p class="q">一个小批量的输入 x 形状是 (64, 784),经过 nn.Linear(784, 128) 和 ReLU 后,输出形状是?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-ok data-why="对。Linear 只改变最后一维:784 个输入特征变成 128 个输出特征,batch 维 64 原样保留。">(64, 128)</button>
+      <button class="opt" data-k="B" data-why="错在把 batch 维和特征维调换了。Linear 不会转置数据,它只对每一行做同一个矩阵乘法;64 个样本仍然排在第一维。">(128, 64)</button>
+      <button class="opt" data-k="C" data-why="错在把 Linear 当成了不改形状的激活函数。in_features=784、out_features=128,输出最后一维必须是 128,不可能还是 784。">(64, 784)</button>
+      <button class="opt" data-k="D" data-why="错在把 batch 维当成了 784。64 是样本数,不是特征数;每个样本得到 128 维输出,所以第一维是 64,不是 784。">(784, 128)</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <div class="demo" id="d-ap-b-mem">
+    <div class="demo-bar"><span class="live">交互</span><span>参数量与显存计算器</span><span class="sp"></span><span class="tag" id="tag-ap-b-mem">全连接</span></div>
+    <div class="demo-body">
+      <div class="controls">
+        <div class="seg" id="seg-ap-b-kind">
+          <button data-kind="fc" aria-pressed="true">全连接</button>
+          <button data-kind="conv" aria-pressed="false">卷积</button>
+        </div>
+        <div class="seg" id="seg-ap-b-k" hidden>
+          <button data-k="3" aria-pressed="true">3×3</button>
+          <button data-k="5" aria-pressed="false">5×5</button>
+        </div>
+      </div>
+      <div class="math" id="m-ap-b-mem">Linear(784 → 512) = 784×512 + 512 = 401,920 参数</div>
+      <div class="canvas-wrap"><canvas id="cv-ap-b-mem" height="230"></canvas></div>
+      <div class="stat-row">
+        <div class="stat"><b id="v-ap-b-params">401,920</b><span>参数量</span></div>
+        <div class="stat"><b id="v-ap-b-pmem">1.53 MiB</b><span>参数显存</span></div>
+        <div class="stat"><b id="v-ap-b-amem">0.125 MiB</b><span>激活显存</span></div>
+        <div class="stat"><b id="v-ap-b-total">6.26 MiB</b><span>训练总显存</span></div>
+      </div>
+      <div class="controls">
+        <div class="ctl"><label for="s-ap-b-in"><span id="l-ap-b-in">输入维度</span> <output id="o-ap-b-in">784</output></label><input id="s-ap-b-in" type="range" min="16" max="2048" step="16" value="784"></div>
+        <div class="ctl"><label for="s-ap-b-out"><span id="l-ap-b-out">输出维度</span> <output id="o-ap-b-out">512</output></label><input id="s-ap-b-out" type="range" min="32" max="2048" step="32" value="512"></div>
+        <div class="ctl"><label for="s-ap-b-batch">批大小 <output id="o-ap-b-batch">64</output></label><input id="s-ap-b-batch" type="range" min="1" max="256" step="1" value="64"></div>
+        <div class="ctl" id="c-ap-b-res" hidden><label for="s-ap-b-res">分辨率 <output id="o-ap-b-res">224</output></label><input id="s-ap-b-res" type="range" min="32" max="256" step="32" value="224"></div>
+      </div>
+    </div>
+    <div class="demo-hint">默认是全连接 784→512、批大小 64。切到卷积看看:批大小会从 64 降到 32,3×3 卷积、64 个输出通道、224×224 输入要留多少激活:参数量只有 1,792,激活却有 392 MiB。估算按 float32、Adam 优化器、单层计算,不含框架开销;真实模型要把每层激活都留到反向,总显存是各层相加。</div>
+  </div>
+
+  <h3><span class="h3-n">B.7</span>L2 与 weight_decay</h3>
+  <p>第 7 章讲过,L2 正则化(L2 regularization)是在损失后面加 (<var>λ</var>/2)Σ<var>w</var><sup>2</sup>(<var>λ</var> 是惩罚强度,正则化系数),让权重每一步先缩一点。PyTorch 的优化器里有个 <code>weight_decay</code> 参数,名字叫权重衰减(weight decay),于是很多人默认它等于 L2。这个等式只在 SGD 下成立;换成 Adam,同样的参数做的是另一件事。</p>
+
+  <p>先看 SGD(随机梯度下降)。L2 项对 <var>w</var> 求导得到 <var>λw</var>,梯度下降的更新变成(其中 <var>η</var> 是学习率,步长;<var>g</var> 是梯度):</p>
+
+  <div class="math"><var>w</var> ← <var>w</var> − <var>η</var>(<var>g</var> + <var>λw</var>) = (1 − <var>ηλ</var>)<var>w</var> − <var>ηg</var></div>
+
+  <p>取 <var>η</var>=0.1、<var>λ</var>=0.01,每一步先把 <var>w</var> 乘 0.999,再减梯度。哪怕梯度一直是 0,1,000 步后 <var>w</var> 也只剩原来的 0.999<sup>1000</sup>≈0.368,衰减了 63%。<code>torch.optim.SGD(..., weight_decay=0.01)</code> 做的事就是往梯度里加 0.01×<var>w</var>,再做上面这步,所以它和 L2 等价,连系数含义都一致。此时不要再在 loss 里手写 L2 项,否则同一个惩罚算了两遍。</p>
+
+  <p>Adam 的问题出在分母。<code>Adam(weight_decay=0.01)</code> 把 <var>λw</var> 加进梯度后,整个梯度(包括这一项)要除以 <var>√v̂</var>——该参数梯度平方的滑动平均(二阶矩,second moment)。梯度长期很小的参数,分母小,<var>λw</var> 被放得很大;梯度长期很大的参数,分母大,<var>λw</var> 被压得很小。举个例子:某参数 <var>w</var>=2.0,长期梯度约 10<sup>-4</sup>,<var>√v̂</var>≈10<sup>-4</sup>,学习率 10<sup>-3</sup>。按真正的衰减,一步应缩 <var>ηλw</var>=10<sup>-3</sup>×0.01×2=2×10<sup>-5</sup>;但耦合进梯度后,实际挪动是 10<sup>-3</sup>×(0.02+10<sup>-4</sup>)/10<sup>-4</sup>≈0.2,是前者的 10,000 倍。同一个 0.01,在不同参数上的收缩强度能差出几个数量级,已经不是第 7 章那个 L2 目标了。</p>
+
+  <p>AdamW 把衰减拆出来:自适应那一步只用原始梯度,收缩单独乘在权重上(<var>m̂</var> 是梯度的滑动平均,一阶矩;<var>ε</var> 是防止除零的小常数):</p>
+
+  <div class="math"><var>w</var> ← <var>w</var> − <var>η</var> · <var>m̂</var> / (√<var>v̂</var> + <var>ε</var>) − <var>ηλ</var><var>w</var></div>
+
+  <p>这样每个参数每步都按同一个 <var>ηλ</var> 收缩,回到 (1−<var>ηλ</var>)<var>w</var> 的形式。PyTorch 里对应 <code>torch.optim.AdamW</code>;写 <code>Adam(weight_decay=...)</code> 得到的是耦合 L2,只是名字也叫 weight_decay。第 6 章的训练循环用 AdamW、第 7 章用分组 weight_decay,原因都在这里。</p>
+
+  <div class="code-wrap"><div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div><pre class="code"><code># SGD:weight_decay 就是 L2
+opt = torch.optim.SGD(model.parameters(), lr=0.1, weight_decay=1e-2)
+
+# Adam:weight_decay 耦合进梯度,不是真正的衰减
+opt = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-2)
+
+# AdamW:解耦,通常优先
+opt = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-2)</code></pre></div>
+
+  <p>最后两条习惯:偏置和 BatchNorm 的缩放参数通常不衰减,第 7 章用参数分组给它们 <code>weight_decay=0</code>;调 weight_decay 时按数量级试,1e-4、1e-3、1e-2、1e-1 各跑一次,不要在线性刻度上微调。它和 dropout 一样,是拿训练损失换验证损失的手段,判断依据仍然只看验证集。</p>
+
+  <h3><span class="h3-n">B.8</span>保存与加载</h3>
+  <p>保存的首选是 <code>state_dict</code>:一个从参数名到张量的字典,不包含模型类本身。加载时先建一个结构相同的模型,再把字典灌进去。这个做法把“结构”和“数值”分开,结构写在代码里,数值存成文件,升级代码时清楚得多。</p>
+  <div class="code-wrap"><div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div><pre class="code"><code>torch.save(model.state_dict(), "mnist_mlp.pt")
+
+model = MLP().to(device)
+state = torch.load("mnist_mlp.pt", map_location=device)
+model.load_state_dict(state)
+model.eval()</code></pre></div>
+  <p>为什么不用 <code>torch.save(model)</code> 直接存整个对象?因为它用 pickle(Python 对象序列化工具)把类路径也写进去;换一个目录、改一次类名、升级框架,加载就可能失败。state_dict 只存数字,稳定得多。刚才那个 101,770 个参数的模型,文件约 407 KB,float32 每个参数 4 字节。</p>
+  <p>保存频率也有讲究:每个轮(epoch)存一次最新检查点,另外单独存一份最佳验证准确率的模型。只存最新,过拟合后无法回头;只存最佳,断点续训会丢掉优化器状态。两个文件加起来通常不到模型权重的两倍,却能让一次意外中断只损失一个轮(epoch)。</p>
+  <p>如果要断点续训,保存检查点(checkpoint):模型、优化器、当前轮数、最佳准确率。Adam 还有两份状态(一阶矩和二阶矩),每份和参数一样大;优化器状态不存,续训后的前几百步会和没断过不一样。<code>map_location</code> 决定张量加载到哪块设备,在没有 GPU 的机器上读 GPU 训练的文件时必须写。</p>
+  <div class="code-wrap"><div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div><pre class="code"><code>ckpt = {"model": model.state_dict(),
+        "optim": optimizer.state_dict(),
+        "epoch": epoch,
+        "best": best_acc}
+torch.save(ckpt, "ckpt.pt")
+
+ckpt = torch.load("ckpt.pt", map_location=device)
+model.load_state_dict(ckpt["model"])
+optimizer.load_state_dict(ckpt["optim"])
+start_epoch = ckpt["epoch"] + 1</code></pre></div>
+  <p>加载不可信来源的权重时用 <code>weights_only=True</code>(新版本默认),避免 pickle 在加载时执行任意代码。自己训练、自己保存的文件风险低,但从网上下载的 <code>.pt</code> 文件应当先当作可执行文件对待。</p>
+
+  <h3><span class="h3-n">B.9</span>三个最常见的报错</h3>
+  <h4>形状不匹配</h4>
+  <p>报错原文通常是 <code>mat1 and mat2 shapes cannot be multiplied</code>,后面括号里写着 (64x784 and 128x64)。意思是左矩阵 64 行 784 列,右矩阵 128 行 64 列,内维 784 和 128 对不上。两种常见原因:忘了把 28×28 拉平,或者 <code>nn.Linear</code> 的 in_features 写错。修法不是猜,而是在 forward 里打印 <code>x.shape</code>:第一个 Linear 之前必须是 <code>(B, 784)</code>,输出必须是 <code>(B, 128)</code>。</p>
+  <p>拉平的时候注意只动特征维。输入 <code>(64, 1, 28, 28)</code> 用 <code>flatten(1)</code> 得到 <code>(64, 784)</code>;若写成 <code>flatten()</code>,64 个样本会被拼成一条 50,176 维的向量,batch 维消失,后面的 Linear 会给出完全错乱的形状。</p>
+  <h4>忘了 zero_grad</h4>
+  <p>梯度会累加。连续 10 个小批量不清零,第 10 步用的梯度是这 10 个小批量的梯度之和,等效学习率放大了约 10 倍。症状是 loss 前期下降很快,随后震荡甚至变成 nan(不是数,not a number)。检查方法很简单:连续两次 backward 之间打印 <code>w.grad.norm()</code>,不清零时它会持续增大,清零后每一步都从头开始。</p>
+  <h4>忘了 model.train() 或 model.eval()</h4>
+  <p>训练时忘了 train(),Dropout 仍处于评估模式,正则化失效,训练准确率虚高;评估时忘了 eval(),Dropout 仍在随机丢激活,同一个样本两次预测不同,验证准确率会抖动 1 到 2 个百分点。更隐蔽的是 BatchNorm:评估时用错统计量,准确率会整体偏低,而且怎么调学习率都救不回来。</p>
+  <h4>设备不一致</h4>
+  <p>报错会以 <code>Expected all tensors</code> 开头,说明模型和数据不在同一台设备上,通常是 cuda:0 与 cpu。统一用 <code>.to(device)</code>,并确认 device 变量只定义一次;把设备写死在两个地方,是这类错误的主要来源。</p>
+
+  <div class="callout warn"><b>常见误解:backward() 会覆盖上一次的梯度</b><p>实际上它做的是累加。同一个参数被多条路径使用时,梯度必须相加才正确,这也是框架默认累加的原因。累加对一次反向是优点,对多次迭代就是坑:不清零,梯度会跨小批量越积越大。所以 zero_grad 不是可选的清理动作,而是训练循环的一部分。</p></div>
+
+  <div class="callout tip"><b>调不通时,先过拟合一个批</b><p>取 64 个样本固定不变,训练 100 步,把 loss 打到接近 0。如果做不到,问题在数据、标签或学习率,不在模型容量。这个五分钟检查能排除大多数“训练不收敛”的假象,也能确认 backward 和 step 真的在改参数。</p></div>
+
+  <div class="quiz" data-id="q-ap-b-2">
+    <p class="q">训练循环里漏写 optimizer.zero_grad(),最直接的后果是?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="错在把累加说成了覆盖。backward 不会覆盖旧梯度,漏写 zero_grad 不会让梯度变小;实际情况正好相反,梯度会越来越大。">梯度被覆盖,训练变慢</button>
+      <button class="opt" data-k="B" data-ok data-why="对。backward 把新梯度加到 .grad 上,漏写 zero_grad 会让多个小批量的梯度叠加,等效学习率随步数增大,loss 容易震荡或发散。">梯度跨小批量累加,等效学习率变大</button>
+      <button class="opt" data-k="C" data-why="错在以为参数不更新。step() 仍然执行,参数照常变化,只是用的梯度是累加后的,方向和幅度都可能不对。">参数不再更新</button>
+      <button class="opt" data-k="D" data-why="错在把 .grad 和计算图混为一谈。计算图在 backward 结束后就会释放;漏写 zero_grad 影响的是 .grad 里的数值,不是图的释放。">计算图无法释放</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <div class="quiz" data-id="q-ap-b-3">
+    <p class="q">调用 model.eval() 之后,下面哪项仍然会发生?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="错。eval() 会把 Dropout 切到推理行为,不再随机丢弃激活,而是全部保留并按训练时的概率缩放。">Dropout 继续随机丢弃激活</button>
+      <button class="opt" data-k="B" data-why="错。BatchNorm 在 eval 模式下用的是训练期间累计的滑动平均,不是当前批的均值方差;这正是它评估时更稳定的原因。">BatchNorm 使用当前批的统计量</button>
+      <button class="opt" data-k="C" data-ok data-why="对。eval() 只改变 Dropout、BatchNorm 等层的行为,不会关闭 autograd;只要输入 requires_grad,前向仍然建图。要省显存还得再加 torch.no_grad()。">前向仍然构建计算图</button>
+      <button class="opt" data-k="D" data-why="错。eval() 不会冻结参数,也不会把 requires_grad 设成 False;它只切换层的行为。冻结参数要手动改 requires_grad,或用 torch.no_grad() 包住前向。">所有参数被冻结,不再求导</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">B.10</span>把这本书搬进框架</h3>
+  <p>最后给一条实践路线。先用这本书的 NN.MLP 在一个二维数据集上跑通,确认你理解前向、损失和梯度;再把同一组超参数搬到 PyTorch,用 <code>nn.Linear</code> 重建结构,用 <code>CrossEntropyLoss</code> 和 <code>Adam</code> 替换手写实现。两边损失曲线应当高度接近;如果差很多,通常是学习率、初始化或数据顺序不同,而不是框架有魔法。</p>
+  <p>再往上走,依次替换四件事:把数据换成 Dataset/DataLoader,把模型换成 nn.Module,把训练循环换成带 train/eval 的模板,把保存换成 state_dict。每一步只改一个变量,出问题时才能定位。等你把这四步都走通,读别人的 PyTorch 项目就不再是从零猜 API,而是能认出每个部分对应书里的哪一章。</p>
+  <p>最后提醒一句:不要从网上复制一个训练循环就改模型。先让模板在 MNIST 上跑出 97%,再替换数据与网络;基线都跑不通时,换模型只会把问题藏得更深。</p>
+  <p>还有一类报错值得单独记住:loss 变成 nan。常见原因按概率排,是学习率太大、对 0 取 log、除以接近 0 的数、标签越界。先打印每个小批量的 loss 和输入范围,再降学习率十倍;不要一上来就换优化器。</p>
+
+  <div class="ch-foot">
+    <span class="state" data-state></span>
+    <span class="sp"></span>
+    <a class="btn" href="#ch-ap-c">下一章 →</a>
+  </div>
+</section>
+
+<script>
+(function(){
+  'use strict';
+
+  function col(name, fallback){ return NN.token(name, fallback); }
+  function comma(n){ return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+  function fmtMiB(bytes){
+    var m = bytes / 1048576;
+    if(m >= 100) return m.toFixed(0) + ' MiB';
+    if(m >= 10) return m.toFixed(1) + ' MiB';
+    if(m >= 1) return m.toFixed(2) + ' MiB';
+    if(m >= 0.001) return m.toFixed(3) + ' MiB';
+    return m.toExponential(1) + ' MiB';
+  }
+  function sigmoid(v){ return 1 / (1 + Math.exp(-v)); }
+  function roundRect(ctx, x, y, w, h, r){
+    var rr = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.lineTo(x + w - rr, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + rr);
+    ctx.lineTo(x + w, y + h - rr);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - rr, y + h);
+    ctx.lineTo(x + rr, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - rr);
+    ctx.lineTo(x, y + rr);
+    ctx.quadraticCurveTo(x, y, x + rr, y);
+    ctx.closePath();
+  }
+  function arrow(ctx, x1, y1, x2, y2, color, lw){
+    ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = lw || 1.4;
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    var a = Math.atan2(y2 - y1, x2 - x1), L = 6;
+    ctx.beginPath();
+    ctx.moveTo(x2, y2);
+    ctx.lineTo(x2 - L * Math.cos(a - 0.45), y2 - L * Math.sin(a - 0.45));
+    ctx.lineTo(x2 - L * Math.cos(a + 0.45), y2 - L * Math.sin(a + 0.45));
+    ctx.closePath(); ctx.fill();
+  }
+
+  defineDemo('d-ap-b-autograd', function(root){
+    var cv = root.querySelector('#cv-ap-b-autograd');
+    var mathEl = root.querySelector('#m-ap-b-chain');
+    var tag = root.querySelector('#tag-ap-b-auto');
+    var sw = root.querySelector('#s-ap-b-w');
+    var sx = root.querySelector('#s-ap-b-x');
+    var sb = root.querySelector('#s-ap-b-b');
+    var ow = root.querySelector('#o-ap-b-w');
+    var ox = root.querySelector('#o-ap-b-x');
+    var ob = root.querySelector('#o-ap-b-b');
+    var vU = root.querySelector('#v-ap-b-u');
+    var vP = root.querySelector('#v-ap-b-p');
+    var vL = root.querySelector('#v-ap-b-loss');
+    var vGW = root.querySelector('#v-ap-b-gw');
+    var backBtn = root.querySelector('#b-ap-b-back');
+    var resetBtn = root.querySelector('#b-ap-b-reset');
+    var w = 0.8, x = 1.5, b = -0.2, reveal = 0;
+    var order = ['L', 'p', 'u', 'b', 'm', 'w', 'x'];
+    var POS = {
+      x: {c: 0, r: 0.26}, w: {c: 0, r: 0.52}, b: {c: 1, r: 0.80},
+      m: {c: 1, r: 0.40}, u: {c: 2, r: 0.40}, p: {c: 3, r: 0.40}, L: {c: 4, r: 0.40}
+    };
+    var EDGES = [['x', 'm'], ['w', 'm'], ['m', 'u'], ['b', 'u'], ['u', 'p'], ['p', 'L']];
+
+    function calc(){
+      var u = w * x + b, p = sigmoid(u), L = -Math.log(p);
+      var gp = -1 / p, gu = gp * p * (1 - p);
+      return {u: u, p: p, L: L, gp: gp, gu: gu, gb: gu, gm: gu, gw: gu * x, gx: gu * w};
+    }
+    function valOf(key, v){
+      if(key === 'x') return x;
+      if(key === 'w') return w;
+      if(key === 'b') return b;
+      if(key === 'm') return w * x;
+      if(key === 'u') return v.u;
+      if(key === 'p') return v.p;
+      return v.L;
+    }
+    function gradOf(key, v){
+      if(key === 'L') return 1;
+      if(key === 'p') return v.gp;
+      if(key === 'u' || key === 'm' || key === 'b') return v.gu;
+      if(key === 'w') return v.gw;
+      return v.gx;
+    }
+    function shown(key){ return reveal > order.indexOf(key); }
+    function localLabel(a, bb, v){
+      if(a === 'x' && bb === 'm') return '×w = ' + w.toFixed(2);
+      if(a === 'w' && bb === 'm') return '×x = ' + x.toFixed(2);
+      if(a === 'm' && bb === 'u') return '×1';
+      if(a === 'b' && bb === 'u') return '×1';
+      if(a === 'u' && bb === 'p') return '×' + (v.p * (1 - v.p)).toFixed(3);
+      return '×' + v.gp.toFixed(3);
+    }
+    function sync(){
+      var v = calc();
+      vU.textContent = v.u.toFixed(3);
+      vP.textContent = v.p.toFixed(3);
+      vL.textContent = v.L.toFixed(3);
+      vGW.textContent = shown('w') ? v.gw.toFixed(3) : '待反向';
+      mathEl.textContent = 'u = w·x + b = ' + w.toFixed(2) + ' × ' + x.toFixed(2) + ' + (' + b.toFixed(2) + ') = ' + v.u.toFixed(3) + '　　p = σ(u) = ' + v.p.toFixed(3) + '　　L = -ln p = ' + v.L.toFixed(3);
+      if(reveal >= order.length){
+        tag.textContent = '反向完成';
+        backBtn.textContent = '反向完成';
+        backBtn.disabled = true;
+      } else {
+        tag.textContent = reveal === 0 ? '前向已算好' : '反向 ' + reveal + '/7';
+        backBtn.textContent = reveal === 0 ? '反向一步' : '反向一步 (' + reveal + '/7)';
+        backBtn.disabled = false;
+      }
+    }
+    function draw(){
+      var fit = NN.fitCanvas(cv, 300), ctx = fit.ctx, W = fit.w, H = fit.h;
+      var v = calc();
+      var colW = (W - 20) / 5;
+      var boxW = Math.min(82, Math.max(42, colW - 10));
+      var boxH = 38;
+      ctx.clearRect(0, 0, W, H);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = '9px "JetBrains Mono", ui-monospace, monospace';
+      ctx.fillStyle = col('--muted');
+      ctx.fillText('方框内是前向值,方框下方是 ∂L/∂节点,边上数字是局部斜率', W / 2, 11);
+
+      function center(key){
+        var p = POS[key];
+        return {x: 10 + colW * (p.c + 0.5), y: H * p.r};
+      }
+      function border(pt, tx, ty){
+        var dx = tx - pt.x, dy = ty - pt.y;
+        var sx2 = dx === 0 ? 1e9 : (boxW / 2) / Math.abs(dx);
+        var sy2 = dy === 0 ? 1e9 : (boxH / 2) / Math.abs(dy);
+        var s = Math.min(sx2, sy2);
+        return {x: pt.x + dx * s, y: pt.y + dy * s};
+      }
+      for(var e = 0; e < EDGES.length; e++){
+        var a = EDGES[e][0], bb = EDGES[e][1];
+        var ca = center(a), cb = center(bb);
+        var pa = border(ca, cb.x, cb.y);
+        var pb = border(cb, ca.x, ca.y);
+        var hot = shown(a) && shown(bb);
+        var ec = hot ? col('--accent') : col('--line2');
+        arrow(ctx, pa.x, pa.y, pb.x, pb.y, ec, hot ? 2 : 1.3);
+        var mx = (pa.x + pb.x) / 2, my = (pa.y + pb.y) / 2;
+        ctx.font = '8px "JetBrains Mono", ui-monospace, monospace';
+        ctx.fillStyle = hot ? col('--accent') : col('--muted');
+        ctx.fillText(localLabel(a, bb, v), mx, my - 5);
+      }
+
+      Object.keys(POS).forEach(function(key){
+        var c = center(key), isShown = shown(key);
+        roundRect(ctx, c.x - boxW / 2, c.y - boxH / 2, boxW, boxH, 6);
+        ctx.fillStyle = col('--surface');
+        ctx.fill();
+        ctx.strokeStyle = isShown ? col('--accent') : col('--line2');
+        ctx.lineWidth = isShown ? 1.8 : 1;
+        ctx.stroke();
+        ctx.font = '10px "JetBrains Mono", ui-monospace, monospace';
+        ctx.fillStyle = col('--muted');
+        ctx.fillText(key, c.x, c.y - 7);
+        ctx.font = '12px "JetBrains Mono", ui-monospace, monospace';
+        ctx.fillStyle = col('--ink');
+        ctx.fillText(valOf(key, v).toFixed(3), c.x, c.y + 9);
+        if(isShown){
+          ctx.font = '8px "JetBrains Mono", ui-monospace, monospace';
+          ctx.fillStyle = col('--muted');
+          ctx.fillText('∂L/∂' + key, c.x, c.y + boxH / 2 + 12);
+          ctx.font = '10px "JetBrains Mono", ui-monospace, monospace';
+          ctx.fillStyle = col('--c2');
+          ctx.fillText(gradOf(key, v).toFixed(3), c.x, c.y + boxH / 2 + 24);
+        }
+      });
+      ctx.textAlign = 'left';
+    }
+    function redraw(){ sync(); draw(); }
+    sw.addEventListener('input', function(){ w = +sw.value; ow.textContent = w.toFixed(2); reveal = 0; redraw(); });
+    sx.addEventListener('input', function(){ x = +sx.value; ox.textContent = x.toFixed(2); reveal = 0; redraw(); });
+    sb.addEventListener('input', function(){ b = +sb.value; ob.textContent = b.toFixed(2); reveal = 0; redraw(); });
+    backBtn.addEventListener('click', function(){
+      if(reveal < order.length) reveal++;
+      redraw();
+    });
+    resetBtn.addEventListener('click', function(){ reveal = 0; redraw(); });
+    var theme = window.Theme || (window.NN && NN.Theme);
+    if(theme) theme.on(draw);
+    window.addEventListener('resize', draw);
+    setTimeout(redraw, 0);
+  });
+
+  defineDemo('d-ap-b-mem', function(root){
+    var cv = root.querySelector('#cv-ap-b-mem');
+    var kindSeg = root.querySelector('#seg-ap-b-kind');
+    var kSeg = root.querySelector('#seg-ap-b-k');
+    var resCtl = root.querySelector('#c-ap-b-res');
+    var inIn = root.querySelector('#s-ap-b-in');
+    var outIn = root.querySelector('#s-ap-b-out');
+    var batchIn = root.querySelector('#s-ap-b-batch');
+    var resIn = root.querySelector('#s-ap-b-res');
+    var oIn = root.querySelector('#o-ap-b-in');
+    var oOut = root.querySelector('#o-ap-b-out');
+    var oBatch = root.querySelector('#o-ap-b-batch');
+    var oRes = root.querySelector('#o-ap-b-res');
+    var lIn = root.querySelector('#l-ap-b-in');
+    var lOut = root.querySelector('#l-ap-b-out');
+    var mathEl = root.querySelector('#m-ap-b-mem');
+    var tag = root.querySelector('#tag-ap-b-mem');
+    var vParams = root.querySelector('#v-ap-b-params');
+    var vPmem = root.querySelector('#v-ap-b-pmem');
+    var vAmem = root.querySelector('#v-ap-b-amem');
+    var vTotal = root.querySelector('#v-ap-b-total');
+    var kind = 'fc';
+    var mem = {
+      fc: {inp: 784, out: 512, batch: 64},
+      conv: {inp: 3, out: 64, batch: 32, res: 224, k: 3}
+    };
+
+    function save(){
+      var s = mem[kind];
+      s.inp = +inIn.value; s.out = +outIn.value; s.batch = +batchIn.value;
+      if(kind === 'conv'){ s.res = +resIn.value; s.k = mem.conv.k; }
+    }
+    function updateOutputs(){
+      oIn.textContent = comma(+inIn.value);
+      oOut.textContent = comma(+outIn.value);
+      oBatch.textContent = comma(+batchIn.value);
+      oRes.textContent = comma(+resIn.value);
+    }
+    function setPressed(){
+      var bs = kindSeg.querySelectorAll('button');
+      for(var i = 0; i < bs.length; i++){
+        bs[i].setAttribute('aria-pressed', bs[i].dataset.kind === kind ? 'true' : 'false');
+      }
+      var ks = kSeg.querySelectorAll('button');
+      for(var j = 0; j < ks.length; j++){
+        ks[j].setAttribute('aria-pressed', (+ks[j].dataset.k === mem.conv.k) ? 'true' : 'false');
+      }
+    }
+    function apply(){
+      var s = mem[kind];
+      if(kind === 'fc'){
+        inIn.min = 16; inIn.max = 2048; inIn.step = 16;
+        outIn.min = 32; outIn.max = 2048; outIn.step = 32;
+        batchIn.min = 1; batchIn.max = 256; batchIn.step = 1;
+        lIn.textContent = '输入维度'; lOut.textContent = '输出维度';
+      } else {
+        inIn.min = 1; inIn.max = 64; inIn.step = 1;
+        outIn.min = 8; outIn.max = 256; outIn.step = 8;
+        batchIn.min = 1; batchIn.max = 64; batchIn.step = 1;
+        lIn.textContent = '输入通道'; lOut.textContent = '输出通道';
+      }
+      inIn.value = s.inp; outIn.value = s.out; batchIn.value = s.batch;
+      resIn.value = mem.conv.res;
+      resCtl.hidden = kind !== 'conv';
+      kSeg.hidden = kind !== 'conv';
+      updateOutputs();
+    }
+    function calc(){
+      if(kind === 'fc'){
+        var a = +inIn.value, o = +outIn.value, B = +batchIn.value;
+        var params = a * o + o;
+        var act = B * o;
+        return {
+          params: params, act: act,
+          formula: 'Linear(' + a + ' → ' + o + ') = ' + a + '×' + o + ' + ' + o + ' = ' + comma(params) + ' 参数'
+        };
+      }
+      var cin = +inIn.value, cout = +outIn.value, bb = +batchIn.value;
+      var res = +resIn.value, k = mem.conv.k;
+      var os = res - k + 3;
+      var cparams = cout * (cin * k * k + 1);
+      var cact = bb * cout * os * os;
+      return {
+        params: cparams, act: cact,
+        formula: 'Conv2d(' + cin + '→' + cout + ', ' + k + '×' + k + ', pad=1) = ' + cout + '×(' + cin + '×' + k + '×' + k + ' + 1) = ' + comma(cparams) + ' 参数;输出 ' + os + '×' + os
+      };
+    }
+    function drawBars(c){
+      var fit = NN.fitCanvas(cv, 230), ctx = fit.ctx, W = fit.w, H = fit.h;
+      var pB = c.params * 4, aB = c.act * 4;
+      var rows = [
+        {l: '权重', v: pB, c: col('--c1')},
+        {l: '梯度', v: pB, c: col('--c1')},
+        {l: 'Adam 状态', v: pB * 2, c: col('--c2')},
+        {l: '激活', v: aB, c: col('--c3')},
+        {l: '合计', v: c.params * 16 + aB, c: col('--accent')}
+      ];
+      var max = 1;
+      for(var i = 0; i < rows.length; i++) if(rows[i].v > max) max = rows[i].v;
+      ctx.clearRect(0, 0, W, H);
+      ctx.textBaseline = 'middle';
+      var pad = 10, top = 12;
+      var labelW = Math.min(72, Math.max(46, W * 0.2));
+      var valW = 94;
+      var barX = pad + labelW;
+      var barW = Math.max(20, W - pad * 2 - labelW - valW);
+      var rowH = (H - top - pad) / rows.length;
+      for(var r = 0; r < rows.length; r++){
+        var row = rows[r], cy = top + rowH * (r + 0.5);
+        if(r === rows.length - 1){
+          ctx.strokeStyle = col('--line2'); ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.moveTo(pad, cy - rowH / 2); ctx.lineTo(W - pad, cy - rowH / 2); ctx.stroke();
+        }
+        ctx.font = '10px "Noto Sans SC", sans-serif';
+        ctx.fillStyle = col('--ink2');
+        ctx.textAlign = 'left';
+        ctx.fillText(row.l, pad, cy);
+        ctx.fillStyle = col('--line');
+        ctx.fillRect(barX, cy - 7, barW, 14);
+        var bw = Math.max(2, row.v / max * barW);
+        ctx.fillStyle = row.c;
+        ctx.fillRect(barX, cy - 7, bw, 14);
+        ctx.font = '9px "JetBrains Mono", ui-monospace, monospace';
+        ctx.fillStyle = col('--ink2');
+        ctx.textAlign = 'right';
+        ctx.fillText(fmtMiB(row.v), W - pad, cy);
+      }
+      ctx.textAlign = 'left';
+    }
+    function render(){
+      var c = calc();
+      vParams.textContent = comma(c.params);
+      vPmem.textContent = fmtMiB(c.params * 4);
+      vAmem.textContent = fmtMiB(c.act * 4);
+      vTotal.textContent = fmtMiB(c.params * 16 + c.act * 4);
+      mathEl.textContent = c.formula;
+      tag.textContent = kind === 'fc' ? '全连接' : '卷积';
+      drawBars(c);
+    }
+    function changed(){
+      save();
+      updateOutputs();
+      render();
+    }
+    var kb = kindSeg.querySelectorAll('button');
+    for(var ki = 0; ki < kb.length; ki++){
+      kb[ki].addEventListener('click', function(){
+        save();
+        kind = this.dataset.kind;
+        apply();
+        setPressed();
+        render();
+      });
+    }
+    var kk = kSeg.querySelectorAll('button');
+    for(var kj = 0; kj < kk.length; kj++){
+      kk[kj].addEventListener('click', function(){
+        mem.conv.k = +this.dataset.k;
+        setPressed();
+        render();
+      });
+    }
+    inIn.addEventListener('input', changed);
+    outIn.addEventListener('input', changed);
+    batchIn.addEventListener('input', changed);
+    resIn.addEventListener('input', changed);
+    var theme = window.Theme || (window.NN && NN.Theme);
+    if(theme) theme.on(render);
+    window.addEventListener('resize', render);
+    setTimeout(function(){ apply(); setPressed(); render(); }, 0);
+  });
+})();
+</script>

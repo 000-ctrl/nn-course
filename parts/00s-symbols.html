@@ -1,0 +1,272 @@
+<section class="ch" id="ch-00-symbols" data-num="§" data-title="符号速查">
+  <header class="ch-head">
+    <div class="ch-eyebrow"><span class="dot"></span>速查页 · 全书通用</div>
+    <h1 class="ch-title">符号速查</h1>
+    <p class="ch-sub">36 个记号的中文读法、含义和最小例子;外加一套读公式与算显存的固定动作。</p>
+    <div class="ch-rule"></div>
+  </header>
+
+  <p class="lead">这一页不按顺序讲新东西。它是一张随时可翻的对照表:读到 <var>Σ</var>、<var>∂</var>、<var>∇</var>、<var>⊙</var> 卡住时,回来查一行;面对一个公式不知道从哪下手时,看 §.2 的三步;听到 7B、fp16、14 GB 不知道在算什么时,翻 §.3。每个符号只给一句读法、一句含义、一个能心算的例子,不展开推导。</p>
+
+  <h3><span class="h3-n">§.1</span>符号总表</h3>
+  <p>先认脸,再认意思。公式里的符号只有两类:一类是<strong>运算</strong>,告诉你把数怎么揉,例如 <var>Σ</var>、<var>∏</var>、<var>∂</var>、<var>∇</var>、<var>⊙</var>;另一类是<strong>命名</strong>,告诉你这个数指的是谁,例如 <var>x</var><sub>i</sub>、<var>η</var>、<var>λ</var>、<var>α</var>。读一个陌生公式时先把两类分开,卡住的地方会少一半。下表 36 条覆盖本书正文和附录里出现的记号,也收了几个论文里常见、本书暂未用到的写法。</p>
+  <p>「怎么读」一列按中文口语写。照着念一遍,公式就不再是密码;念不顺,通常说明你还没找到它的主干。</p>
+
+  <div class="demo" id="d-00s-filter">
+    <div class="demo-bar"><span class="live">交互</span><span>符号过滤器:输入一个字就能定位</span><span class="sp"></span><span class="tag">36 条</span></div>
+    <div class="demo-body">
+      <div class="controls">
+        <div class="ctl"><label for="i-00s-q">搜符号或读法 <output id="o-00s-count">32 / 32</output></label>
+          <input id="i-00s-q" type="search" class="btn" size="18" placeholder="例如 求和、梯度、argmax、1e-3" autocomplete="off" spellcheck="false">
+        </div>
+      </div>
+      <p id="e-00s-empty" hidden>没有匹配的记号。试试更短的关键词:输入「和」或「sig」,而不是整句解释。</p>
+      <div class="tbl-wrap">
+        <table id="t-00s-table">
+          <thead><tr><th>记号</th><th>怎么读</th><th>含义</th><th>出现在哪章</th><th>一个最小例子</th></tr></thead>
+          <tbody>
+            <tr><td class="num">Σ</td><td>西格玛,把后面这一串加起来</td><td>求和:下标从几到几,就依次相加</td><td>01、03、06、08</td><td class="num">Σ<sub>i=1</sub><sup>3</sup> i = 1+2+3 = 6</td></tr>
+            <tr><td class="num">∏</td><td>派,把后面这一串乘起来</td><td>连乘:动作和 Σ 一样,只是把加换成乘</td><td>09、11</td><td class="num">∏<sub>t=1</sub><sup>3</sup> 2 = 2×2×2 = 8</td></tr>
+            <tr><td class="num">∂</td><td>偏,读「偏 L 偏 w」</td><td>偏导:只看一个变量,其他全当常数</td><td>03、05、06</td><td class="num">∂(w²+3b)/∂w = 2w</td></tr>
+            <tr><td class="num">∇</td><td>纳布拉,也叫倒三角;常直接读「梯度」</td><td>把损失对每个参数的偏导排成一个向量</td><td>03、06</td><td class="num">∇L = (∂L/∂w<sub>1</sub>, ∂L/∂w<sub>2</sub>)</td></tr>
+            <tr><td class="num">Δ</td><td>德尔塔,读「增量」</td><td>一个量变化了多少;ΔW 就是新旧权重之差</td><td>14</td><td class="num">ΔW = W<sub>新</sub> − W<sub>旧</sub></td></tr>
+            <tr><td class="num">E[·]</td><td>期望,读「对括号里求平均」</td><td>按概率加权平均;在样本上就是普通均值</td><td>07、11</td><td class="num">E[x] = (1/n) Σ x<sub>i</sub></td></tr>
+            <tr><td class="num">Var</td><td>方差,读英文 variance</td><td>换一批训练数据,预测会晃多大</td><td>07</td><td class="num">Var = E[(x − E[x])²]</td></tr>
+            <tr><td class="num">log</td><td>对数,读「log」</td><td>问「底数要几次方才等于这个数」,底数常为 10</td><td>03、06</td><td class="num">log<sub>10</sub>100 = 2</td></tr>
+            <tr><td class="num">ln</td><td>自然对数,读「ln」</td><td>以 e 为底的对数;交叉熵里的 log 通常指它</td><td>06、11、A</td><td class="num">ln e = 1,ln 1 = 0</td></tr>
+            <tr><td class="num">e</td><td>自然常数,读「e」</td><td>约 2.718,指数增长用的底</td><td>01、06</td><td class="num">e<sup>0</sup> = 1,e<sup>1</sup> ≈ 2.718</td></tr>
+            <tr><td class="num">exp</td><td>读「exp」,就是 e 的多少次方</td><td>exp(x) 和 e<sup>x</sup> 是同一个东西</td><td>01、06、11</td><td class="num">exp(0) = 1,exp(1) ≈ 2.718</td></tr>
+            <tr><td class="num">|·|</td><td>绝对值,读「x 的绝对值」</td><td>去掉负号,只留大小;作用在一个数上</td><td>01、A</td><td class="num">|−3| = 3</td></tr>
+            <tr><td class="num">‖·‖</td><td>范数,读「w 的范数」</td><td>向量的长度;‖w‖² 是各分量平方和</td><td>06、11</td><td class="num">‖(3,4)‖ = 5</td></tr>
+            <tr><td class="num">⟨·,·⟩</td><td>内积,读「a 和 b 的内积」</td><td>两个向量逐项相乘再相加,和点积同义</td><td>A、10</td><td class="num">⟨(1,2),(3,4)⟩ = 11</td></tr>
+            <tr><td class="num">⊙</td><td>圈点,读「逐元素乘」</td><td>两个同形状数组,对应位置各乘各的</td><td>09、11</td><td class="num">(1,2) ⊙ (3,4) = (3,8)</td></tr>
+            <tr><td class="num">⊙ (Hadamard)</td><td>哈达玛积,就是上面那个圈点</td><td>正式名字,强调它不是矩阵乘法</td><td>09、11</td><td class="num">形状不变,只换每个位置的数</td></tr>
+            <tr><td class="num">argmax</td><td>读「arg max」</td><td>不是最大值,是取到最大值时的下标或参数</td><td>00、06</td><td class="num">argmax(0.2,0.7,0.1) = 2</td></tr>
+            <tr><td class="num">argmin</td><td>读「arg min」</td><td>取到最小值时的那个参数</td><td>00、03</td><td class="num">argmin<sub>w</sub>(w−3)² = 3</td></tr>
+            <tr><td class="num">⌊⌋</td><td>向下取整,读「floor」</td><td>去掉小数,往小的方向取整数</td><td>08</td><td class="num">⌊3.7⌋ = 3</td></tr>
+            <tr><td class="num">⌈⌉</td><td>向上取整,读「ceil」</td><td>去掉小数,往大的方向取整数</td><td>论文常见</td><td class="num">⌈3.1⌉ = 4</td></tr>
+            <tr><td class="num">→</td><td>读「变成」或「映射到」</td><td>左边经过一步得到右边</td><td>01、05、11</td><td class="num">x → 隐藏层 → 输出</td></tr>
+            <tr><td class="num">↦</td><td>读「映射到」,前面带输入名</td><td>定义函数时说「x 送进去,出来 x²」</td><td>论文常见</td><td class="num">x ↦ x²</td></tr>
+            <tr><td class="num">T 上标</td><td>读「转置」</td><td>行列互换;QK<sup>T</sup> 这样写才能相乘</td><td>02、09、10</td><td class="num">W 是 2×3,W<sup>T</sup> 是 3×2</td></tr>
+            <tr><td class="num">⊤</td><td>也读「转置」,和 T 上标同义</td><td>只是排版字体不同,意思完全一样</td><td>02、10</td><td class="num">A<sup>⊤</sup> = A<sup>T</sup></td></tr>
+            <tr><td class="num">x<sub>i</sub></td><td>读「x 下标 i」或「第 i 个 x」</td><td>从一组里挑第 i 个;不是 x 乘 i</td><td>01、03、A</td><td class="num">x<sub>1</sub>=0.5,x<sub>2</sub>=1.2</td></tr>
+            <tr><td class="num">diag</td><td>读「diag」或「对角矩阵」</td><td>把一串数摆到对角线上,其余位置为 0</td><td>09</td><td class="num">diag(2,3) = [[2,0],[0,3]]</td></tr>
+            <tr><td class="num">σ</td><td>西格玛,小写</td><td>两种常见意思:sigmoid 函数;标准差</td><td>01、11</td><td class="num">σ(0)=0.5;σ=2 表示波动 2</td></tr>
+            <tr><td class="num">η</td><td>伊塔,也直接读「学习率」</td><td>每一步走多远;代码里常写 lr</td><td>03、06</td><td class="num">w ← w − 0.1∇L 里的 0.1</td></tr>
+            <tr><td class="num">λ</td><td>兰姆达</td><td>正则化强度:越大,越把权重往 0 拉</td><td>06、07</td><td class="num">损失加 λ‖w‖²,λ=1e-4</td></tr>
+            <tr><td class="num">α</td><td>阿尔法</td><td>系数或权重;注意力里表示看某位置多少</td><td>09、14</td><td class="num">注意力权重 α = 0.7</td></tr>
+            <tr><td class="num">ε</td><td>艾普西龙</td><td>一个很小的数:防除零,或表示噪声</td><td>06、11</td><td class="num">Adam 里 ε = 1e-8</td></tr>
+            <tr><td class="num">1e-3</td><td>读「一乘以十的负三次方」,就是 0.001</td><td>科学计数法:e 后面是 10 的几次方</td><td>03、06</td><td class="num">1e-3 = 0.001;1e3 = 1000</td></tr>
+            <tr><td class="num">O(·)</td><td>读「大 O」</td><td>增长的量级:只关心规模翻倍时计算量怎么涨,不管常数</td><td>08、12、14</td><td class="num">O(N²):N 翻倍,计算量变 4 倍</td></tr>
+            <tr><td class="num">~</td><td>读「服从」</td><td>左边的随机变量取自右边的分布</td><td>11</td><td class="num">z ~ N(0,1):z 是标准正态随机数</td></tr>
+            <tr><td class="num">max / min</td><td>读「取最大 / 取最小」</td><td>在所有选择里挑出使后面式子最大(或最小)的那个</td><td>06、11</td><td class="num">min<sub>G</sub> max<sub>D</sub>:先让 D 最大,再让 G 最小</td></tr>
+            <tr><td class="num">⊤</td><td>读「转置」</td><td>把矩阵的行列互换,(B,D) 变 (D,B)</td><td>02、05</td><td class="num">(B,D) @ (D,out) 里的 W⊤</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="demo-hint">输入「求和」「Σ」「梯度」「argmax」都会实时过滤,命中的整行会亮起;右上角显示还剩几条。清空输入框恢复全部 36 条。</div>
+  </div>
+
+  <div class="callout key"><b>读符号的顺序</b>先问「这是运算还是名字」。<var>Σ</var> 是运算,你要找它的范围;<var>η</var> 是名字,你要找它在文中的定义。两者混淆,公式就会读成一句没有主语的话。</div>
+
+  <h3><span class="h3-n">§.2</span>怎么读一个公式</h3>
+  <p>拿第 03 章的均方误差(mean squared error, MSE)当样本。原式是:</p>
+
+  <div class="math"><var>L</var> = (1/<var>n</var>) Σ (<var>ŷ</var><sub>i</sub> − <var>y</var><sub>i</sub>)²</div>
+
+  <p><strong>第一步,找等号左边的名字。</strong>左边是 <var>L</var>,loss 的首字母,读「损失」。它是一个标量:右边这一大串无论多长,最后只产出一个数。名字定了,你才知道这个公式在回答什么问题——「这批数据现在错得多离谱」,而不是「每个参数该是多少」。</p>
+  <p><strong>第二步,读右边最外层的运算。</strong>最外层是 (1/<var>n</var>) 乘以 <var>Σ</var>。所以整个右边是「先算一堆东西,全部加起来,再除以 <var>n</var>」。别从最里面开始读;先抓住最外层,你才知道这个公式的主干是平均。<var>Σ</var> 里面是 (<var>ŷ</var><sub>i</sub> − <var>y</var><sub>i</sub>)²,顺序是每个样本先做减法,再平方。减法先做,因为括号;平方把负号和大小一起处理掉。</p>
+  <p><strong>第三步,看下标范围。</strong><var>i</var> 是样本编号。这里的 <var>Σ</var> 没写下标,按上下文是从第 1 个到第 <var>n</var> 个。范围决定你要重复几次:有 <var>n</var> 个样本,括号里的动作就做 <var>n</var> 次。<var>ŷ</var> 头上的小帽子读「预测值」,它和 <var>y</var> 是两个不同的数。</p>
+
+  <p>三步合起来,公式展开成:</p>
+  <div class="math"><var>L</var> = (1/<var>n</var>) [ (<var>ŷ</var><sub>1</sub> − <var>y</var><sub>1</sub>)² + (<var>ŷ</var><sub>2</sub> − <var>y</var><sub>2</sub>)² + … + (<var>ŷ</var><sub>n</sub> − <var>y</var><sub>n</sub>)² ]</div>
+  <p>这就是全部。你不用背「均方误差」四个字,只要会按顺序念:预测减答案,平方,全部加起来,除以样本数。</p>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>片段</th><th>怎么读</th><th>它在做什么</th></tr></thead>
+      <tbody>
+        <tr><td class="num">L</td><td>损失</td><td>最终输出的那个数,越小越好</td></tr>
+        <tr><td class="num">1/n</td><td>n 分之一</td><td>对 n 个样本取平均,不让样本多的批次天然损失大</td></tr>
+        <tr><td class="num">Σ</td><td>西格玛,加起来</td><td>把每个样本的平方误差累加</td></tr>
+        <tr><td class="num">(ŷ<sub>i</sub> − y<sub>i</sub>)²</td><td>预测减答案,再平方</td><td>单个样本的错;平方让正负不抵消,大错被放大</td></tr>
+        <tr><td class="num">i</td><td>第 i 个样本</td><td>下标,范围 1 到 n</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="demo" id="d-00s-read">
+    <div class="demo-bar"><span class="live">交互</span><span>逐字读公式:点一段,看它在说什么</span><span class="sp"></span><span class="tag">点按钮</span></div>
+    <div class="demo-body">
+      <div class="seg" id="seg-00s-read">
+        <button data-part="left" aria-pressed="true">左边 L</button>
+        <button data-part="frac" aria-pressed="false">1/n</button>
+        <button data-part="sum" aria-pressed="false">Σ</button>
+        <button data-part="sq" aria-pressed="false">平方项</button>
+      </div>
+      <div class="math" id="o-00s-slice"><var>L</var></div>
+      <p id="o-00s-say">等号左边是 <var>L</var>,loss 的首字母。先确认它是一个数,不是一组数,你才知道这个公式在算什么。</p>
+    </div>
+    <div class="demo-hint">点四个按钮中的任意一个,上面的公式片段和下面的大白话会一起换。把四段按顺序点一遍,就是一次完整的公式朗读。</div>
+  </div>
+
+  <p>代入三个数验证。三个样本的误差是 0.1、−0.2、0.9。平方后是 0.01、0.04、0.81,相加得 0.86,除以 3,得到 <var>L</var> ≈ 0.287。若把 0.9 那个误差修到 0.3,<var>L</var> 变成 (0.01+0.04+0.09)/3 ≈ 0.047。两行算术,你就知道模型为什么优先修大误差。</p>
+
+  <div class="code-wrap"><div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div><pre class="code"><code>import numpy as np
+
+y_hat = np.array([2.1, 1.8, 2.9])   # 模型预测
+y     = np.array([2.0, 2.0, 2.0])   # 真实答案
+err   = y_hat - y                   # [0.1, -0.2, 0.9]
+L     = (err ** 2).mean()           # 先平方,再平均
+print(L)                            # 0.2866666666666667</code></pre></div>
+
+  <p>换一个公式,动作完全一样。交叉熵 <var>L</var> = −<var>Σ</var><sub>c</sub> <var>y</var><sub>c</sub> log <var>p</var><sub>c</sub>:左边仍是标量;最外层是「求和再取负」;下标 <var>c</var> 遍历类别。标签是独热时,求和里只有真实类别那一项非零,所以它退化成 −log <var>p</var><sub>真实类</sub>。三步走完,一个看起来更吓人的公式也就地拆开了。</p>
+
+  <div class="quiz" data-id="q-00s-1">
+    <p class="q">公式 <var>L</var> = (1/<var>n</var>) Σ (<var>ŷ</var><sub>i</sub> − <var>y</var><sub>i</sub>)² 里,正确的计算顺序是?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-ok data-why="对。括号先做减法,平方作用于整个差,Σ 把 n 项加起来,最外面的 1/n 最后才除。三个误差 0.1、−0.2、0.9 得到 (0.01+0.04+0.81)/3 ≈ 0.287。">每个样本先算差、再平方,然后把 n 项加起来,最后除以 n</button>
+      <button class="opt" data-k="B" data-why="错在把平方提到求和外面。那样算的是 (Σ误差)²/n,正负误差会先抵消:0.1−0.2+0.9=0.8,平方后除以 3 得 0.213,不是 0.287。">先把所有差加起来,再整体平方,最后除以 n</button>
+      <button class="opt" data-k="C" data-why="错在把 1/n 读进了括号。1/n 在最外层,先除会让每一项先缩小 n 倍再平方,结果比正确值小 n 倍。">先除以 n,再对每个差平方并相加</button>
+      <button class="opt" data-k="D" data-why="错在漏了括号。平方作用在整个 (ŷ_i − y_i) 上,不是只作用在 y_i 上;否则单位都不一致,也不是均方误差。">平方只作用在 y_i 上,ŷ_i 保持原样</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">§.3</span>单位与量级</h3>
+  <p>最后一块是数值。公式里的 7B、fp16、1e-3、14 GB,难点不在数学,在单位换算。先把三套单位分开:参数个数、字节、十进制前缀。混在一起看,每个数都会显得像魔法。</p>
+
+  <p><strong>科学计数法。</strong>1e-3 里的 e 是 exponent,不是自然常数。1e-3 = 1×10<sup>−3</sup> = 0.001;1e3 = 1×10<sup>3</sup> = 1000;1e9 = 10 亿。写 1e-3 只是为了少写三个零,读的时候直接读「零点零零一」。</p>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>前缀</th><th>读法</th><th>数值</th><th>例子</th></tr></thead>
+      <tbody>
+        <tr><td class="num">k</td><td>千</td><td class="num">10<sup>3</sup></td><td>32k 参数 = 32,000 个</td></tr>
+        <tr><td class="num">M</td><td>兆,也就是百万</td><td class="num">10<sup>6</sup></td><td>1M token = 100 万个</td></tr>
+        <tr><td class="num">G</td><td>吉,也就是十亿</td><td class="num">10<sup>9</sup></td><td>14 GB = 140 亿字节</td></tr>
+        <tr><td class="num">T</td><td>太,也就是万亿</td><td class="num">10<sup>12</sup></td><td>1T 参数 = 1 万亿个</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>注意 B 有两个身份。7B 里的 B 是 billion(十亿),说的是 70 亿个参数;GB 里的 B 是 byte(字节),说的是存储空间。同一个字母,一个数个数,一个数字节。看到 7B 就以为是 7 GB,是把两个 B 当成了一个。</p>
+
+  <p><strong>每个参数占几个字节,由精度决定。</strong>float32 用 4 字节,float16 和 bfloat16 用 2 字节,int8 用 1 字节,int4 只用半个字节。精度越低,权重越小,代价是数值更粗糙。</p>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>精度</th><th>每个参数</th><th>7B 权重</th><th>70B 权重</th></tr></thead>
+      <tbody>
+        <tr><td>float32(fp32)</td><td class="num">4 字节</td><td class="num">28 GB</td><td class="num">280 GB</td></tr>
+        <tr><td>float16(fp16)/ bfloat16</td><td class="num">2 字节</td><td class="num">14 GB</td><td class="num">140 GB</td></tr>
+        <tr><td>int8</td><td class="num">1 字节</td><td class="num">7 GB</td><td class="num">70 GB</td></tr>
+        <tr><td>int4</td><td class="num">0.5 字节</td><td class="num">3.5 GB</td><td class="num">35 GB</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p><strong>7B 为什么是 14 GB。</strong>三步:7B = 7×10<sup>9</sup> 个参数;fp16 每个参数 2 字节;相乘得 7×10<sup>9</sup>×2 = 14×10<sup>9</sup> 字节,也就是 14 GB。没有隐藏项。换成 fp32 就是 28 GB,换成 int8 就是 7 GB,同一套乘法。</p>
+
+  <p>严格说,14 GB 用的是十进制:1 GB = 10<sup>9</sup> 字节。操作系统常按 2<sup>30</sup> 算,显示约 13.0 GiB。差 7%,不是算错,是 GB 和 GiB 两套定义。买显卡、看显存时先确认工具报的是哪一种。</p>
+
+  <p>训练比推理贵得多。推理只需要存权重:7B 的 fp16 权重 14 GB。全量微调还要存梯度、优化器状态和 fp32 主权重:每个参数约 2 字节权重 + 2 字节梯度 + 4 字节一阶矩 + 4 字节二阶矩 + 4 字节主权重,合计约 16 字节。7×10<sup>9</sup>×16 = 112 GB,还没算激活值。所以一张 80 GB 的卡装不下 7B 的全量微调,却装得下它的 fp16 推理。第 14 章会把 KV 缓存和并行策略接着算下去。</p>
+
+  <div class="callout warn"><b>三个最容易看错的记号</b>
+    <ul class="list">
+      <li><var>Σ</var> 与 <var>∏</var>:一个连加,一个连乘。读出声就不会混——「西格玛,加起来」「派,乘起来」。</li>
+      <li><var>|x|</var> 与 <var>‖x‖</var>:前者是一个数的绝对值,后者是一个向量的长度。向量没有「去掉负号」这回事。</li>
+      <li>7B 与 7 GB:前者是 70 亿个参数,后者是 70 亿字节。中间差着一个「每个参数占几字节」。</li>
+    </ul>
+  </div>
+
+  <div class="quiz" data-id="q-00s-2">
+    <p class="q">一个 7B 模型用 fp16 存权重,大约需要多少显存?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-ok data-why="对。7B = 7×10^9 个参数,fp16 每个 2 字节,相乘是 14×10^9 字节,即 14 GB。">14 GB</button>
+      <button class="opt" data-k="B" data-why="错在把参数个数直接当成了字节数。7 GB 对应 int8(每参数 1 字节);fp16 要再乘 2。">7 GB</button>
+      <button class="opt" data-k="C" data-why="错在用了 fp32。每个参数 4 字节才会得到 28 GB;fp16 是 2 字节,正好一半。">28 GB</button>
+      <button class="opt" data-k="D" data-why="错在算的是全量微调的训练状态。112 GB 来自每参数约 16 字节(权重、梯度、两个矩、fp32 主权重),不是推理时的权重。">112 GB</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <div class="ch-foot">
+    <span class="state" data-state></span>
+    <span class="sp"></span>
+    <a class="btn" href="#ch-01-neuron">下一章 →</a>
+  </div>
+</section>
+
+<script>
+defineDemo('d-00s-filter', function(root){
+  var input = root.querySelector('#i-00s-q');
+  var rows = Array.prototype.slice.call(root.querySelectorAll('#t-00s-table tbody tr'));
+  var count = root.querySelector('#o-00s-count');
+  var empty = root.querySelector('#e-00s-empty');
+  var origin = rows.map(function(r){
+    return Array.prototype.map.call(r.cells, function(c){ return c.innerHTML; });
+  });
+
+  function update(){
+    var q = input.value.trim().toLowerCase();
+    var hit = 0;
+    rows.forEach(function(r, ri){
+      var ok = !q || r.textContent.toLowerCase().indexOf(q) >= 0;
+      r.hidden = !ok;
+      Array.prototype.forEach.call(r.cells, function(c, ci){
+        c.innerHTML = (q && ok) ? '<em>' + origin[ri][ci] + '</em>' : origin[ri][ci];
+      });
+      if(ok) hit++;
+    });
+    count.textContent = hit + ' / ' + rows.length;
+    empty.hidden = hit > 0;
+  }
+
+  input.addEventListener('input', update);
+  input.addEventListener('search', update);
+  update();
+});
+
+defineDemo('d-00s-read', function(root){
+  var PARTS = {
+    left: {
+      html: '<var>L</var>',
+      say: '等号左边是 <var>L</var>,loss 的首字母。先确认它是一个数,不是一组数,你才知道这个公式在算什么。'
+    },
+    frac: {
+      html: '(1/<var>n</var>)',
+      say: '<var>n</var> 分之一,<var>n</var> 是样本个数。它是最外层的一步:先别管里面,最后要把总和除以 <var>n</var>。'
+    },
+    sum: {
+      html: 'Σ',
+      say: '西格玛,求和。下标 <var>i</var> 从 1 数到 <var>n</var>,每个样本算一次括号里的东西,再全部加起来。'
+    },
+    sq: {
+      html: '(<var>ŷ</var><sub>i</sub> − <var>y</var><sub>i</sub>)<sup>2</sup>',
+      say: '预测减答案,再平方。减法先做,因为括号;平方后正负误差不会互相抵消,大误差也会被放大。'
+    }
+  };
+  var seg = root.querySelector('#seg-00s-read');
+  var slice = root.querySelector('#o-00s-slice');
+  var say = root.querySelector('#o-00s-say');
+
+  function pick(key){
+    var p = PARTS[key];
+    if(!p) return;
+    slice.innerHTML = p.html;
+    say.innerHTML = p.say;
+    Array.prototype.forEach.call(seg.querySelectorAll('button'), function(b){
+      b.setAttribute('aria-pressed', b.getAttribute('data-part') === key ? 'true' : 'false');
+    });
+  }
+
+  seg.addEventListener('click', function(e){
+    var b = e.target.closest ? e.target.closest('button') : null;
+    if(b && seg.contains(b)) pick(b.getAttribute('data-part'));
+  });
+
+  pick('left');
+});
+</script>

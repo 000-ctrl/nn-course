@@ -1,0 +1,542 @@
+<section class="ch" id="ch-02-matrix" data-num="02" data-title="矩阵与张量">
+  <header class="ch-head">
+    <div class="ch-eyebrow"><span class="dot"></span>第 02 章 · 起步</div>
+    <h1 class="ch-title">矩阵与张量</h1>
+    <p class="ch-sub">看清形状,把一层神经网络的计算读成一排神经元同时做点积。</p>
+    <div class="ch-rule"></div>
+  </header>
+
+  <div class="prereq"><b>读前</b><span>第 01 章的 1.2 加权和 <code>z = w·x + b</code> 与 1.3 点积:知道一行权重和输入逐个相乘再相加是什么意思。</span><b>可跳过</b><span>2.5 的几何解释、2.6 的显卡细节和两段代码块,跳过不影响形状主线。</span></div>
+
+  <p class="lead">神经网络里跑得最多的运算不是激活函数,而是矩阵乘法。一个 768 维的向量送进 3072 个神经元,本质是一次 3072×768 的矩阵乘向量;32 个样本一起送进去,就变成 (32,768) 乘 (768,3072) 的矩阵乘法。这一章只解决一件事:给你任意一个形状,你能立刻说出它经过一层之后变成什么,以及为什么显卡特别擅长做这件事。</p>
+
+  <h3><span class="h3-n">2.1</span>三种容器:向量、矩阵、张量</h3>
+
+  <p>先认清装数字的容器。标量(scalar)是一个数,比如 <code>3.14</code>。向量(vector)是一列数,比如 <code>[1.0, 0.5, -1.0]</code>。矩阵(matrix)是一张二维表,有行(row)也有列(column)。张量(tensor)是任意维的数组,向量和矩阵都是它的特例:向量是 1 维张量,矩阵是 2 维张量。深度学习框架里的“张量”没有神秘含义,它就是一块按固定形状排好的数字,外加一份记录怎么求导的元数据。</p>
+
+  <p>形状(shape)是一串整数,按轴(axis)的顺序写出每一维的长度。3 个数的向量,形状是 <code>(3,)</code>,注意末尾那个逗号,它说明这是 1 维而不是一个数。3 行 4 列的矩阵,形状是 <code>(3, 4)</code>。32 张 3 通道 224×224 的图片堆在一起,形状是 <code>(32, 3, 224, 224)</code>,一共 32×3×224×224 = 4,816,896 个数,按 float32(32 位浮点数,每数 4 字节)存储占 18.4 MB。索引从 0 开始:矩阵 <code>A</code> 的第 0 行第 2 列写作 <code>A[0, 2]</code>,它是第 1 行的第 3 个数。</p>
+
+  <p>中文里的“维”有两个意思,很容易混。说“三维向量”通常指长度为 3 的向量;说“三维张量”指有 3 个轴,每个轴可以很长。读代码时不要靠中文词猜,直接看 <code>shape</code>。形状是这一章的主线:之后每一个报错、每一次结果不对,第一件事都是把相关张量的形状打印出来。</p>
+
+  <p>同一块数字可以按不同形状解释。内存里连续的 12 个数,既可以看成 3×4 的矩阵,也可以看成 2×6 的矩阵或长度 12 的向量。改变形状(reshape)通常不复制数据,只换一种索引方式。神经网络里大量使用 reshape:把 <code>(B, C, H, W)</code> 的特征图(每个通道一张二维图)摊平成 <code>(B, C×H×W)</code>,再送进全连接层(每个输出都连到全部输入)。数字一个没变,但矩阵乘法现在能用了。</p>
+
+  <div class="callout key"><b>核心</b>张量就是多维数组,形状是它的身份证。看到 <code>(B, D)</code> 要立刻读成“B 个样本,每个样本 D 个特征”,而不是“B 行 D 列的表”这么含糊。</div>
+
+  <h3><span class="h3-n">2.2</span>矩阵乘向量:一行就是一个神经元</h3>
+
+  <p>一个神经元做的事是加权和。三个输入 <code>x₁, x₂, x₃</code>,三个权重 <code>w₁, w₂, w₃</code>,再加一个偏置(bias)<code>b</code>,输出是 <code>w₁x₁ + w₂x₂ + w₃x₃ + b</code>。这种“对应位置相乘、再全部加起来”的操作叫点积(dot product),结果是单个数字,不是向量。</p>
+
+  <p>现在放 3 个神经元,每个有自己的 3 个权重。把第 1 个神经元的权重放第 1 行,第 2 个的放第 2 行,第 3 个的放第 3 行,得到一个 3×3 的矩阵 <code>W</code>。矩阵乘向量 <code>Wx</code> 的定义,就是“每一行与 <code>x</code> 做一次点积”:</p>
+
+  <div class="math"><var>y</var><sub>i</sub> = Σ<sub>j=1..3</sub> <var>W</var><sub>ij</sub> <var>x</var><sub>j</sub> + <var>b</var><sub>i</sub></div>
+
+  <p>式中的 Σ 是求和。换成普通话:<code>y</code> 的第 <code>i</code> 个分量,只由 <code>W</code> 的第 <code>i</code> 行和 <code>x</code> 决定。3 个神经元、9 个权重、3 个输入,一共做 9 次乘法、6 次加法,得到 3 个输出。写成循环就是三个互不依赖的点积,谁先算谁后算都不影响结果。这是本章最重要的一句话:<strong>矩阵乘向量不是某种神秘运算,而是一排神经元同时算</strong>。矩阵的行数就是神经元个数,列数就是每个神经元看到的输入个数。</p>
+
+  <div class="demo" id="d-02-matvec">
+    <div class="demo-bar"><span class="live">交互</span><span>3×3 矩阵乘向量:逐行点积</span><span class="sp"></span><span class="tag">拖动三个滑块</span></div>
+    <div class="demo-body">
+      <div class="canvas-wrap"><canvas id="cv-02-matvec" height="300"></canvas></div>
+      <div class="controls">
+        <div class="ctl"><label for="s-02-x1">输入 x₁ <output id="o-02-x1">1.0</output></label><input id="s-02-x1" type="range" min="-2" max="2" step="0.1" value="1"></div>
+        <div class="ctl"><label for="s-02-x2">输入 x₂ <output id="o-02-x2">0.5</output></label><input id="s-02-x2" type="range" min="-2" max="2" step="0.1" value="0.5"></div>
+        <div class="ctl"><label for="s-02-x3">输入 x₃ <output id="o-02-x3">-1.0</output></label><input id="s-02-x3" type="range" min="-2" max="2" step="0.1" value="-1"></div>
+        <button class="btn" id="b-02-play">暂停逐行演示</button>
+      </div>
+    </div>
+    <div class="demo-hint">高亮行每隔约 1.2 秒换一次。拖动滑块,三行输出会同时变化;观察每一行的点积只用到它自己和输入向量。</div>
+  </div>
+
+  <p>从列的角度看同一件事,会得到另一种直觉。把 <code>W</code> 按列切开,<code>Wx</code> 等于“输入的每一维乘以对应的一整列,再把三列加起来”。第 <code>j</code> 列记录的是:输入第 <code>j</code> 维每增加 1,所有输出分别变化多少。行视角回答“每个神经元在看什么”,列视角回答“每个输入影响谁”。两种视角算出来是同一组数字。</p>
+
+  <details class="fold"><summary>点开看列视角的推导</summary><div class="fold-body">
+    <p>设 <code>W = [c₁ c₂ c₃]</code>,其中 <code>cⱼ</code> 是第 <code>j</code> 列(一个长度为 3 的向量)。那么 <code>Wx = x₁c₁ + x₂c₂ + x₃c₃</code>。验证第 <code>i</code> 个分量:右边是 <code>x₁W[i,1] + x₂W[i,2] + x₃W[i,3]</code>,正好是第 <code>i</code> 行与 <code>x</code> 的点积。这不是巧合,矩阵乘法本来就同时具备“行点积”和“列组合”两种读法。</p>
+  </div></details>
+
+  <h3><span class="h3-n">2.3</span>批处理:多出来的那个 B</h3>
+
+  <p>真实训练不会一次只送一个样本,而是一次送一个小批量(mini-batch)。把 <code>B</code> 个样本摞起来,得到形状 <code>(B, D)</code> 的矩阵:第 0 个轴是样本编号,第 1 个轴是特征。一层从 <code>D</code> 维映射到 <code>H</code> 维的全连接层,权重形状是 <code>(D, H)</code>,计算是:</p>
+
+  <div class="math">(<var>B</var>, <var>D</var>) @ (<var>D</var>, <var>H</var>) → (<var>B</var>, <var>H</var>)</div>
+
+  <p>注意权重写成 <code>(D, H)</code> 而不是 <code>(H, D)</code>,因为只有这样内层两个 <code>D</code> 才能对上。输出仍然是 <code>B</code> 行:每一行是同一个样本的新特征,每一列是一个隐藏神经元的输出。所谓“批处理”(batching),不是把 <code>B</code> 个样本混成一个,而是让它们在同一个矩阵乘法里各占一行,彼此不串味。这种把权重存成 <code>(D, H)</code>、矩阵乘写在右边的写法,和 2.2 的 <code>Wx</code> 差一次转置;2.7 会把两种记号并排写清楚。</p>
+
+  <p>算一下工作量。32 个样本、输入 768 维、输出 3072 维,一次矩阵乘法要做 32×768×3072 = 75,497,472 次“乘加”,按每次乘加 2 次浮点运算计,约 1.51 亿次浮点运算(151 MFLOP,FLOP 指一次浮点运算)。如果换成 32 次单独的矩阵乘向量,数学结果完全一样,但 32 次小任务很难喂饱显卡。合成一个 <code>(32, 768) @ (768, 3072)</code>,显卡看到的是一块 32×3072 的输出,一次调度就能把几千个核心铺满。</p>
+
+  <p>批维度 <code>B</code> 不参与任何点积。它只是把同样的权重复制使用 B 次,所以同一批里的样本共享权重,梯度也会在这一维上求平均。这也是为什么单样本推理时通常仍保留一个长度为 1 的批维度:形状写成 <code>(1, 768)</code> 而不是 <code>(768,)</code>,代码路径就和训练时完全一致,少一类形状错误。</p>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>步骤</th><th>张量形状</th><th>参数量</th></tr></thead>
+      <tbody>
+        <tr><td>输入一批图片</td><td class="num">(32, 784)</td><td class="num">0</td></tr>
+        <tr><td>全连接 784 → 256</td><td class="num">(32, 256)</td><td class="num">200,960</td></tr>
+        <tr><td>ReLU 激活</td><td class="num">(32, 256)</td><td class="num">0</td></tr>
+        <tr><td>全连接 256 → 10</td><td class="num">(32, 10)</td><td class="num">2,570</td></tr>
+        <tr><td>合计</td><td class="num">(32, 10)</td><td class="num">203,530</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>表格最后一列值得记一下:784×256 的权重加 256 个偏置是 200,960 个参数;256×10 加 10 个偏置是 2,570 个。参数量只由相邻两层的宽度决定,和批大小 <code>B</code> 无关。把 <code>B</code> 从 32 改成 64,参数量一个不变,显存里的激活值翻倍。</p>
+
+  <div class="quiz" data-id="q-02-1">
+    <p class="q"><span>权重 <code>W</code> 的形状是 <code>(4, 3)</code>,输入 <code>x</code> 的形状是 <code>(3,)</code>。那么 <code>Wx</code> 的形状是什么?</span></p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-ok data-why="对。内层维度 3 和 3 对上并被消去,只留下外面的 4,结果是长度 4 的向量,对应 4 个神经元的输出。">(4,)</button>
+      <button class="opt" data-k="B" data-why="错。3 是内层维度,它在点积里被消掉了,不会留在结果里。结果的长度由 W 的行数 4 决定,不是输入长度。">(3,)</button>
+      <button class="opt" data-k="C" data-why="错。这是把 W 自身的形状当成了结果。矩阵乘向量得到的是向量,不是矩阵;只有当右边也是矩阵时,结果才保留两个轴。">(4, 3)</button>
+      <button class="opt" data-k="D" data-why="错。结果的第一个轴来自 W 的行数 4,不是列数 3。W 的列数只决定内层维度能不能对上,不会出现在输出形状里。">(3, 4)</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">2.4</span>转置、广播与维度对齐</h3>
+
+  <p>矩阵乘法有一条铁律:<strong>左边矩阵的列数必须等于右边矩阵的行数</strong>。满足时,结果取左边的行数和右边的列数。把 <code>(M, K) @ (K, N)</code> 想成“中间的 K 被夹掉,剩下 (M, N)”。上一节的 <code>(B, D) @ (D, H)</code> 就是这条规则的直接应用。</p>
+
+  <p>转置(transpose)把矩阵的行列互换,形状 <code>(M, N)</code> 变成 <code>(N, M)</code>,记作 <code>Wᵀ</code>。它最常见的用途是凑内层维度。有些框架把全连接权重存成 <code>(H, D)</code>,计算时写 <code>x @ W.t()</code>;数值和 <code>W @ x</code> 一样,只是把存储布局换了一下。转置不是“求逆”,也不改变任何一个数,只是换索引顺序。</p>
+
+  <p>形状不同不能直接相加,除非其中一个能广播(broadcast)。广播的规则只有两条:先把两个形状右对齐;每一维要么相等,要么其中一个是 1,是 1 的那一维会被复制到另一边的长度。于是 <code>(32, 3072) + (3072,)</code> 合法:后者被看成 <code>(1, 3072)</code>,在第 0 轴上复制 32 次;而 <code>(32, 768) + (32, 1)</code> 也合法,结果 <code>(32, 768)</code>,每一行加同一个数。反过来,<code>(32, 768) + (768, 1)</code> 会报错:右对齐后第一维是 32 对 768,两者既不相等也没有 1。</p>
+
+  <div class="callout warn"><b>常见误解</b><code>*</code> 不是矩阵乘法。NumPy 和 PyTorch 里 <code>A * B</code> 是逐元素相乘(elementwise),要求两个数组能广播到同一形状;真正的矩阵乘法是 <code>A @ B</code> 或 <code>torch.matmul</code>。把 3×3 的 <code>W</code> 和长度 3 的 <code>x</code> 写成 <code>W * x</code>,得到的是 <code>W</code> 的每一列分别乘以 <code>x</code> 的对应元素,而不是三个神经元的加权和。因为形状常常碰巧能广播,错误不会立刻报出来,但每个数都错了。看到结果不对,先打印 <code>shape</code>,再确认用的是 <code>@</code> 还是 <code>*</code>。</div>
+
+  <p>把偏置加进矩阵乘法时,广播每天都在工作。权重算完得到 <code>(B, H)</code>,偏置是 <code>(H,)</code>,广播后每个样本加的是同一组偏置。如果偏置误写成 <code>(B, 1)</code>,每个样本会加一个不同的数,模型仍然能训练,但你已经悄悄多了一组参数。形状检查能抓住前一种错误,抓不住后一种,所以偏置的形状要按约定写死为 <code>(H,)</code>。</p>
+
+  <div class="quiz" data-id="q-02-2">
+    <p class="q"><span>激活值形状是 <code>(32, 3072)</code>,偏置形状是 <code>(3072,)</code>。两者相加的结果形状是什么?</span></p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-ok data-why="对。右对齐后偏置相当于 (1, 3072),第 0 维从 1 复制到 32,得到 (32, 3072),每个样本加同一组偏置。">(32, 3072)</button>
+      <button class="opt" data-k="B" data-why="错。这是把偏置的形状当成了结果。相加不会把 32 个样本合并掉,广播只复制、不求和。">(3072,)</button>
+      <button class="opt" data-k="C" data-why="错。广播要求右对齐后每一维相等或其中一个是 1。(32, 3072) 对 (1, 3072):第 1 轴 32 对 1 可广播,第 2 轴 3072 对 3072 相等,所以结果仍是 (32, 3072),不会变成三维。">(32, 3072, 3072)</button>
+      <button class="opt" data-k="D" data-why="错。广播不会把 3072 这一维消掉,也不会把结果压成列向量 (32, 1)。(32, 1) 是每个样本只保留一个数的形状,和这里逐元素相加是两回事。">(32, 1)</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">2.5</span>矩阵对空间做了什么</h3>
+
+  <p>前面把矩阵当成一排权重。换个角度,2×2 矩阵是一次平面变换:它把每个二维点 <code>(x, y)</code> 搬到 <code>(ax + by, cx + dy)</code>。单位正方形(四个角是 <code>(0,0)、(1,0)、(1,1)、(0,1)</code>)被搬成一个平行四边形,它的面积等于行列式(determinant)的绝对值。行列式写成 <code>ad − bc</code>:正值说明面积被放大或缩小但方向不变,负值说明平面被翻转了一次,等于 0 说明整个平面被压成一条线,信息丢了,这个矩阵不可逆。</p>
+
+  <p>神经网络的每一层都是这种变换的高维版本。一个 <code>(768, 3072)</code> 的权重矩阵,把 768 维空间搬到 3072 维空间;如果某一层的矩阵秩(rank,独立方向数)不够,输入里就有一部分方向被彻底压掉,再深的网络也恢复不了。这也是为什么初始化不能全零:全零矩阵把一切压成原点,梯度也随之消失。</p>
+
+  <div class="demo" id="d-02-transform">
+    <div class="demo-bar"><span class="live">交互</span><span>二维线性变换:网格、面积与行列式</span><span class="sp"></span><span class="tag">拖动四个元素</span></div>
+    <div class="demo-body">
+      <div class="canvas-wrap"><canvas id="cv-02-transform" height="360"></canvas></div>
+      <div class="stat-row">
+        <div class="stat"><b id="o-02-det">1.07</b><span>行列式 det</span></div>
+        <div class="stat"><b id="o-02-area">1.07</b><span>单位正方形面积</span></div>
+      </div>
+      <div class="controls">
+        <div class="ctl"><label for="s-02-a">a(左上)<output id="o-02-a">1.30</output></label><input id="s-02-a" type="range" min="-2" max="2" step="0.05" value="1.3"></div>
+        <div class="ctl"><label for="s-02-b">b(右上)<output id="o-02-b">0.50</output></label><input id="s-02-b" type="range" min="-2" max="2" step="0.05" value="0.5"></div>
+        <div class="ctl"><label for="s-02-c">c(左下)<output id="o-02-c">0.20</output></label><input id="s-02-c" type="range" min="-2" max="2" step="0.05" value="0.2"></div>
+        <div class="ctl"><label for="s-02-d">d(右下)<output id="o-02-d">0.90</output></label><input id="s-02-d" type="range" min="-2" max="2" step="0.05" value="0.9"></div>
+      </div>
+      <div class="controls">
+        <div class="seg">
+          <button data-preset="rot" aria-pressed="false">旋转</button>
+          <button data-preset="shear" aria-pressed="false">剪切</button>
+          <button data-preset="mirror" aria-pressed="false">镜像</button>
+          <button data-preset="squash" aria-pressed="false">压扁</button>
+        </div>
+      </div>
+    </div>
+    <div class="demo-hint">浅色是原始单位网格,蓝色是变换后的网格。把行列式拖到 0,看单位正方形如何塌成一条线;拖成负数,看方向标签变成“翻转”。</div>
+  </div>
+
+  <p>行列式还解释了深度学习里“可逆性”的直觉。变换的面积倍率是 <code>|det|</code>;如果 <code>det</code> 接近 0,正向计算把大量不同的输入挤到几乎同一个输出上,反向传播时梯度也会被同样地压缩,训练会变得不稳定。生成模型里有一类方法叫归一化流(normalizing flow),它要求每一层都可逆,于是必须把行列式算出来并保证它不接近 0,这正是这个几何量的工程用途。</p>
+
+  <div class="quiz" data-id="q-02-3">
+    <p class="q">一个 2×2 矩阵的行列式是 −3。它把单位正方形变成的图形,面积和方向如何?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-ok data-why="对。面积是行列式的绝对值,等于 3;负号表示这一次变换翻转了平面的方向,就像照镜子。">面积 3,方向翻转</button>
+      <button class="opt" data-k="B" data-why="错。面积不能是负数。行列式的符号记录方向,大小才记录面积倍率,所以面积取绝对值 3。">面积 −3,方向翻转</button>
+      <button class="opt" data-k="C" data-why="错。面积倍率由 |ad − bc| 给出,不是恒等于 1。只有 det 为 +1 或 −1 的变换才保持面积,比如旋转和镜像。">面积 1,方向不变</button>
+      <button class="opt" data-k="D" data-why="错。负的行列式恰恰意味着方向被翻转。方向不变的变换(如旋转、剪切)行列式为正。">面积 3,方向不变</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">2.6</span>为什么 GPU 擅长矩阵乘</h3>
+
+  <p>矩阵乘法天生适合并行。输出 <code>(M, N)</code> 里的每一个格子都是独立的一次点积,算 <code>C[0,0]</code> 不需要等 <code>C[0,1]</code>。一个 1024×1024 的矩阵乘,有 1,048,576 个输出格子,每个格子做 1024 次乘加,总共约 21.5 亿次浮点运算。这种“几百万个互不依赖的小任务”正是显卡的结构优势:一张 A100 有 6,912 个 FP32 核心,而一台常见的 8 核 CPU 只有 8 个通用核心,单核虽然快得多,核心数差了两个数量级。</p>
+
+  <p>第二个优势是内存访问规则。矩阵乘按行和列顺序读数据,地址连续、可预测,显卡可以把一块数据先搬进片上缓存,让成千上万个线程反复使用,这块技术叫分块(tiling)。A100 的显存带宽是 1,555 GB/s,双通道 DDR4 内存大约 50 GB/s,差 30 倍。对一个 1024³ 的矩阵乘,数据量约 12.6 MB,计算量 2.15 GFLOP,每读 1 字节要做约 170 次浮点运算;而 A100 的算力与带宽之比约为 12.6 FLOP/字节。计算远多于搬运,所以这类运算在显卡上是计算受限,能把核心跑满;CPU 的核心太少,往往还没算完就在等数据。</p>
+
+  <div class="callout warn"><b>常见误解</b>“GPU 快是因为频率高”是反的。A100 的加速频率约 1.41 GHz,比很多 CPU 的 4 GHz 低得多;它快是因为核心数量多(6,912 对 8)、显存带宽高(1,555 GB/s 对约 50 GB/s),并且愿意把大量晶体管花在并行乘加上。这也解释了为什么 GPU 对矩阵乘快得惊人,对一串必须按顺序执行的逻辑却可能比 CPU 慢:并行度用不上时,它的优势就没了。</div>
+
+  <p>批大小 <code>B</code> 在这里的作用也清楚了。<code>B</code> 越大,一次矩阵乘的输出格子越多,显卡越容易把所有核心铺满,单次运算的固定开销被摊薄。但 <code>B</code> 太大会让显存里的激活值和梯度线性增长,于是工程上要在一个范围内调:小到能放进显存,大到能让显卡忙起来。这也是“批大小”成为训练超参数的原因之一。</p>
+
+  <div class="code-wrap"><div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div><pre class="code"><code>import numpy as np
+
+W = np.array([[ 1.0, -1.0,  0.5],
+              [ 0.5,  1.0, -0.5],
+              [-1.0,  0.5,  1.5]])      # 形状 (3, 3)
+x = np.array([1.0, 0.5, -1.0])          # 形状 (3,)
+
+y = W @ x                               # 矩阵乘向量
+print(y)                                # [ 0.   1.5 -2.25]
+
+X = np.random.randn(32, 3)              # 32 个样本, 形状 (32, 3)
+Y = X @ W.T                             # (32, 3) @ (3, 3) -> (32, 3)
+print(X.shape, W.T.shape, Y.shape)      # (32, 3) (3, 3) (32, 3)
+
+b = np.array([0.1, -0.2, 0.3])          # 形状 (3,)
+Z = Y + b                               # 广播成 (32, 3)
+print(Z.shape)                          # (32, 3)
+
+# 反例: 这个加法会报错, 因为 32 和 3 无法对齐
+# Y + np.zeros((3, 1))</code></pre></div>
+
+  <div class="code-wrap"><div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div><pre class="code"><code>import torch
+
+W = torch.randn(3072, 768)   # 3072 个神经元, 每个 768 个权重
+x = torch.randn(32, 768)     # 一批 32 个样本
+
+y = x @ W.t()                # (32, 768) @ (768, 3072) -> (32, 3072)
+b = torch.zeros(3072)
+y = y + b                    # 每个样本加同一组偏置
+
+print(y.shape)               # torch.Size([32, 3072])
+print(y.dtype)               # torch.float32</code></pre></div>
+
+  <h3><span class="h3-n">2.7</span>单样本与批量的记号约定</h3>
+
+  <p>同一层计算,书里会出现两种写法。<strong>单样本</strong>写成 <code>Wx + b</code>:<code>x</code> 是长度 <code>D</code> 的列向量,<code>W</code> 的形状是 <code>(out, in)</code>,每一行是一个神经元的权重,乘出来是长度 <code>out</code> 的列向量。<strong>批量</strong>写成 <code>XWᵀ + b</code>:<code>X</code> 把 <code>B</code> 个样本按行摞起来,形状 <code>(B, D)</code>;<code>Wᵀ</code> 把权重转置成 <code>(D, out)</code>,内层两个 <code>D</code> 对上,结果是 <code>(B, out)</code>。这就是 2.2 和 2.3 两种写法的关系。</p>
+
+  <p>关键是三个形状:<code>X</code> 是 <code>(B, D)</code>,<code>W</code> 是 <code>(out, in)</code>,<code>Wᵀ</code> 是 <code>(D, out)</code>。批量公式算出的第 <code>i</code> 行,正好等于第 <code>i</code> 个样本单独做 <code>Wx + b</code> 的结果;所谓批量,只是把 <code>B</code> 次单样本计算摞在一起,没有新的数学。反过来,单样本也可以补一个长度为 1 的批维度,写成 <code>(1, D) @ (D, out)</code>,再把结果取回 <code>(out,)</code>。批量为 1 时,两种写法是同一个结果,只是矩阵乘写在左边还是右边。</p>
+
+  <p>用具体数字走一遍。设输入 3 维、输出 2 维:<code>W = [[1, 2, 3], [4, 5, 6]]</code>,形状 <code>(2, 3)</code>。单样本 <code>x = [1, 0, −1]</code> 是 <code>(3,)</code>,<code>Wx</code> 的两行分别做点积,得到 <code>[−2, −2]</code>,形状 <code>(2,)</code>。现在有两个样本 <code>X = [[1, 0, −1], [0, 2, 1]]</code>,形状 <code>(2, 3)</code>。直接 <code>XW</code> 会报错,因为内层 3 对 2 对不上;把 <code>W</code> 转置成 <code>Wᵀ = [[1, 4], [2, 5], [3, 6]]</code>,形状 <code>(3, 2)</code>,再做 <code>(2, 3) @ (3, 2) → (2, 2)</code>。结果第一行仍是 <code>[−2, −2]</code>,第二行是 <code>[7, 16]</code>:6 个数字一个没变,变的只是 <code>W</code> 的行列顺序。</p>
+
+  <p>2.3 为了少写转置,直接把权重存成 <code>(D, H)</code>,即 <code>(in, out)</code>。按本节约定,那个矩阵就是 <code>Wᵀ</code>,所以 2.3 的 <code>(B, D) @ (D, H)</code> 与 <code>XWᵀ + b</code> 完全等价。记住一句话:<strong>单样本 <code>Wx + b</code>,批量 <code>XWᵀ + b</code>;看到 <code>(D, H)</code> 的权重,先想它是不是转置过的。</strong></p>
+
+  <h3><span class="h3-n">2.8</span>把形状当合同</h3>
+
+  <p>写模型时,形状不是注释,而是接口合同。两层之间接不上,几乎永远是形状问题,不是数学问题。下面五条检查顺序能覆盖绝大多数错误。</p>
+
+  <ol class="steps">
+    <li>先写下每个张量的形状,包括批维度。不要只在脑子里想,打印出来。</li>
+    <li>矩阵乘法检查内层:左边最后一维必须等于右边倒数第二维。</li>
+    <li>记住输出形状:去掉内层,保留外层。批维度 <code>B</code> 永远在最前面。</li>
+    <li>相加之前右对齐,逐维检查“相等或有一个是 1”。偏置写成 <code>(H,)</code>,不要写成 <code>(B, 1)</code>。</li>
+    <li>结果不对时,先怀疑 <code>*</code> 和 <code>@</code> 用错,再怀疑转置漏了,最后才怀疑公式。</li>
+  </ol>
+
+  <div class="callout tip"><b>正确做法</b>在代码里养成一个习惯:每个新张量创建后打印一次 <code>shape</code>,或者在 PyTorch 里用 <code>assert x.shape[-1] == W.shape[0]</code> 把合同写成断言。报错发生在乘法之前,比算完发现数值全错再回头找要省几个小时。</div>
+
+  <p>最后把这一章压缩成三句话。向量是一列数,矩阵是一张表,张量是任意维的数组,形状说明每一维多长。矩阵乘向量是一排神经元各做一次点积;矩阵乘矩阵是把这件事对一批样本同时做。转置和广播只是为了把形状凑齐,真正决定结果的是内层维度是否对齐。下一章会在这个基础上问一个更关键的问题:这些权重从哪里来,以及怎样让它们自动变好。</p>
+
+  <div class="ch-foot">
+    <span class="state" data-state></span>
+    <span class="sp"></span>
+    <a class="btn" href="#ch-03-gradient">下一章 →</a>
+  </div>
+</section>
+
+<script>
+defineDemo('d-02-matvec', function(root){
+  if (!window.NN){
+    setTimeout(function(){ window.DEMOS['d-02-matvec'](root); }, 40);
+    return;
+  }
+  var cv = root.querySelector('#cv-02-matvec');
+  var sliders = [root.querySelector('#s-02-x1'), root.querySelector('#s-02-x2'), root.querySelector('#s-02-x3')];
+  var outs = [root.querySelector('#o-02-x1'), root.querySelector('#o-02-x2'), root.querySelector('#o-02-x3')];
+  var playBtn = root.querySelector('#b-02-play');
+  var W = [[1.0, -1.0, 0.5], [0.5, 1.0, -0.5], [-1.0, 0.5, 1.5]];
+  var x = [1.0, 0.5, -1.0];
+  var row = 0, playing = true, last = 0;
+
+  function f1(v){
+    if (Math.abs(v) < 0.05) return '0.0';
+    return v.toFixed(1).replace('-', '−');
+  }
+  function yOf(i){ return W[i][0]*x[0] + W[i][1]*x[1] + W[i][2]*x[2]; }
+
+  function arrow(ctx, x1, y1, x2, y2, col, lw){
+    var ang = Math.atan2(y2-y1, x2-x1);
+    ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = lw || 1.4;
+    ctx.beginPath(); ctx.moveTo(x1, y1);
+    ctx.lineTo(x2 - 7*Math.cos(ang), y2 - 7*Math.sin(ang)); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x2, y2);
+    ctx.lineTo(x2 - 8*Math.cos(ang-0.4), y2 - 8*Math.sin(ang-0.4));
+    ctx.lineTo(x2 - 8*Math.cos(ang+0.4), y2 - 8*Math.sin(ang+0.4));
+    ctx.closePath(); ctx.fill();
+  }
+
+  function cell(ctx, x0, y0, w0, h0, fill, stroke, text, col, bold){
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x0, y0, w0, h0, 5);
+    else ctx.rect(x0, y0, w0, h0);
+    ctx.fillStyle = fill; ctx.fill();
+    ctx.strokeStyle = stroke; ctx.lineWidth = 1.2; ctx.stroke();
+    ctx.fillStyle = col;
+    ctx.font = (bold ? '600 ' : '') + '13px "JetBrains Mono", monospace';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(text, x0 + w0/2, y0 + h0/2 + 0.5);
+  }
+
+  function draw(){
+    if (!root.offsetParent) return;
+    var fit = NN.fitCanvas(cv, 300);
+    var ctx = fit.ctx, w = fit.w;
+    ctx.clearRect(0, 0, w, 300);
+    var ink = NN.token('--ink', '#0E1A28');
+    var muted = NN.token('--muted', '#68798C');
+    var line = NN.token('--line2', '#A9BACB');
+    var accent = NN.token('--accent', '#1F4FD1');
+    var accent2 = NN.token('--accent2', '#C24A16');
+    var soft = NN.token('--accent-soft', '#DCE6FF');
+    var surface = NN.token('--surface', '#FFFFFF');
+
+    var pad = 16, inW = 54, gapX = 28;
+    var cellW = Math.max(30, Math.min(52, (w - pad*2 - inW - gapX - 46 - 54) / 3));
+    var mx = pad + inW + gapX;
+    var ox = mx + cellW*3 + 46;
+    var top = 44;
+    var ch = cellW - 4;
+
+    ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+    ctx.font = '11px "JetBrains Mono", monospace';
+    ctx.fillStyle = muted;
+    ctx.fillText('x', pad + inW/2, top - 22);
+    ctx.fillText('W', mx + cellW*1.5, top - 22);
+    ctx.fillText('y', ox + 27, top - 22);
+
+    var i, j;
+    for (i = 0; i < 3; i++){
+      for (j = 0; j < 3; j++){
+        var active = (i === row);
+        cell(ctx, mx + j*cellW, top + i*cellW, cellW - 3, ch,
+             active ? soft : surface, active ? accent : line,
+             f1(W[i][j]), active ? accent : ink, active);
+      }
+      cell(ctx, pad, top + i*cellW, inW, ch, surface, line, f1(x[i]), ink, false);
+      cell(ctx, ox, top + i*cellW, 54, ch, surface, (i === row ? accent : line),
+           f1(yOf(i)), (i === row ? accent : ink), (i === row));
+    }
+
+    var my = top + row*cellW + ch/2;
+    arrow(ctx, pad + inW + 2, my, mx - 5, my, accent, 1.6);
+    arrow(ctx, mx + cellW*3 + 3, my, ox - 6, my, accent2, 1.6);
+    ctx.fillStyle = accent2; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+    ctx.font = '11px "JetBrains Mono", monospace';
+    ctx.fillText('Wx', (mx + cellW*3 + ox)/2, my - 8);
+
+    var expr = f1(W[row][0]) + '×' + f1(x[0]);
+    for (j = 1; j < 3; j++){
+      var v = W[row][j];
+      expr += (v < 0 ? ' − ' : ' + ') + f1(Math.abs(v)) + '×' + f1(x[j]);
+    }
+    var yy = top + cellW*3 + 22;
+    ctx.strokeStyle = line; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(pad, yy - 8); ctx.lineTo(w - pad, yy - 8); ctx.stroke();
+
+    var fs = (w < 430) ? 11 : 12;
+    ctx.font = fs + 'px "JetBrains Mono", monospace';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = ink;
+    ctx.fillText('y' + (row+1) + ' = ' + expr, pad, yy + 12);
+    ctx.fillStyle = accent2;
+    ctx.fillText('    = ' + f1(yOf(row)), pad, yy + 30);
+  }
+
+  sliders.forEach(function(sl, k){
+    sl.addEventListener('input', function(){
+      x[k] = +sl.value;
+      outs[k].textContent = x[k].toFixed(1);
+      last = performance.now();
+      draw();
+    });
+  });
+
+  playBtn.addEventListener('click', function(){
+    playing = !playing;
+    last = performance.now();
+    playBtn.textContent = playing ? '暂停逐行演示' : '继续逐行演示';
+  });
+
+  if (window.Theme && window.Theme.on) window.Theme.on(draw);
+  window.addEventListener('resize', draw);
+
+  var ticker = NN.createTicker(root, function(t){
+    if (!playing) return;
+    if (!last) last = t;
+    if (t - last > 1200){
+      last = t;
+      row = (row + 1) % 3;
+      draw();
+    }
+  });
+  ticker.start();
+  outs.forEach(function(o, k){ o.textContent = x[k].toFixed(1); });
+  draw();
+});
+
+defineDemo('d-02-transform', function(root){
+  if (!window.NN){
+    setTimeout(function(){ window.DEMOS['d-02-transform'](root); }, 40);
+    return;
+  }
+  var cv = root.querySelector('#cv-02-transform');
+  var keys = ['a', 'b', 'c', 'd'];
+  var S = {a: 1.30, b: 0.50, c: 0.20, d: 0.90};
+  var sl = {}, out = {};
+  keys.forEach(function(k){
+    sl[k] = root.querySelector('#s-02-' + k);
+    out[k] = root.querySelector('#o-02-' + k);
+  });
+  var detEl = root.querySelector('#o-02-det');
+  var areaEl = root.querySelector('#o-02-area');
+  var presets = Array.prototype.slice.call(root.querySelectorAll('.seg button'));
+  var lastW = 0;
+
+  function apex(){
+    var det = S.a*S.d - S.b*S.c;
+    detEl.textContent = (det < 0 ? '−' : '') + Math.abs(det).toFixed(2);
+    areaEl.textContent = Math.abs(det).toFixed(2);
+  }
+
+  function arrow(ctx, x1, y1, x2, y2, col, lw){
+    var ang = Math.atan2(y2-y1, x2-x1);
+    ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = lw || 2;
+    ctx.beginPath(); ctx.moveTo(x1, y1);
+    ctx.lineTo(x2 - 9*Math.cos(ang), y2 - 9*Math.sin(ang)); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x2, y2);
+    ctx.lineTo(x2 - 10*Math.cos(ang-0.4), y2 - 10*Math.sin(ang-0.4));
+    ctx.lineTo(x2 - 10*Math.cos(ang+0.4), y2 - 10*Math.sin(ang+0.4));
+    ctx.closePath(); ctx.fill();
+  }
+
+  function draw(){
+    if (!root.offsetParent) return;
+    var fit = NN.fitCanvas(cv, 360);
+    var ctx = fit.ctx, w = fit.w, h = fit.h;
+    lastW = w;
+    ctx.clearRect(0, 0, w, h);
+    var ink = NN.token('--ink', '#0E1A28');
+    var muted = NN.token('--muted', '#68798C');
+    var line = NN.token('--line2', '#A9BACB');
+    var accent = NN.token('--accent', '#1F4FD1');
+    var accent2 = NN.token('--accent2', '#C24A16');
+    var c3 = NN.token('--c3', '#1baf7a');
+    var surface = NN.token('--surface', '#FFFFFF');
+
+    var scale = Math.min(w / 6.2, (h - 46) / 5.4);
+    var cx = w/2, cy = h/2 + 6;
+    function X(x, y){ return cx + scale*x; }
+    function Y(x, y){ return cy - scale*y; }
+    var k;
+
+    ctx.lineWidth = 1; ctx.strokeStyle = line; ctx.globalAlpha = 0.4;
+    for (k = -3; k <= 3; k++){
+      ctx.beginPath(); ctx.moveTo(X(-3, k), Y(-3, k)); ctx.lineTo(X(3, k), Y(3, k)); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(X(k, -3), Y(k, -3)); ctx.lineTo(X(k, 3), Y(k, 3)); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    ctx.strokeStyle = accent; ctx.globalAlpha = 0.55; ctx.lineWidth = 1;
+    for (k = -3; k <= 3; k++){
+      ctx.beginPath();
+      ctx.moveTo(X(S.a*k + S.b*(-3), S.c*k + S.d*(-3)), Y(S.a*k + S.b*(-3), S.c*k + S.d*(-3)));
+      ctx.lineTo(X(S.a*k + S.b*3, S.c*k + S.d*3), Y(S.a*k + S.b*3, S.c*k + S.d*3));
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(X(S.a*(-3) + S.b*k, S.c*(-3) + S.d*k), Y(S.a*(-3) + S.b*k, S.c*(-3) + S.d*k));
+      ctx.lineTo(X(S.a*3 + S.b*k, S.c*3 + S.d*k), Y(S.a*3 + S.b*k, S.c*3 + S.d*k));
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    var p0 = [0, 0], p1 = [S.a, S.c], p2 = [S.a + S.b, S.c + S.d], p3 = [S.b, S.d];
+    ctx.beginPath();
+    ctx.moveTo(X(p0[0], p0[1]), Y(p0[0], p0[1]));
+    ctx.lineTo(X(p1[0], p1[1]), Y(p1[0], p1[1]));
+    ctx.lineTo(X(p2[0], p2[1]), Y(p2[0], p2[1]));
+    ctx.lineTo(X(p3[0], p3[1]), Y(p3[0], p3[1]));
+    ctx.closePath();
+    ctx.globalAlpha = 0.16; ctx.fillStyle = accent; ctx.fill();
+    ctx.globalAlpha = 1; ctx.strokeStyle = accent; ctx.lineWidth = 2; ctx.stroke();
+
+    ctx.setLineDash([4, 4]); ctx.strokeStyle = line; ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(X(0, 0), Y(0, 0));
+    ctx.lineTo(X(1, 0), Y(1, 0));
+    ctx.lineTo(X(1, 1), Y(1, 1));
+    ctx.lineTo(X(0, 1), Y(0, 1));
+    ctx.closePath(); ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.strokeStyle = muted; ctx.globalAlpha = 0.55; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(X(-3, 0), Y(-3, 0)); ctx.lineTo(X(3, 0), Y(3, 0)); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(X(0, -3), Y(0, -3)); ctx.lineTo(X(0, 3), Y(0, 3)); ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    arrow(ctx, X(0, 0), Y(0, 0), X(S.a, S.c), Y(S.a, S.c), accent2, 2.2);
+    arrow(ctx, X(0, 0), Y(0, 0), X(S.b, S.d), Y(S.b, S.d), c3, 2.2);
+    ctx.font = '11px "JetBrains Mono", monospace';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = accent2;
+    ctx.fillText('M·e₁', X(S.a, S.c) + 6, Y(S.a, S.c) - 10);
+    ctx.fillStyle = c3;
+    ctx.fillText('M·e₂', X(S.b, S.d) + 6, Y(S.b, S.d) - 10);
+
+    ctx.fillStyle = surface; ctx.strokeStyle = ink; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(X(0, 0), Y(0, 0), 3.5, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+
+    ctx.font = '11px "Noto Sans SC", sans-serif';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = muted;
+    ctx.fillText('虚线: 原始单位正方形', 14, 20);
+    ctx.fillStyle = accent;
+    ctx.fillText('蓝色: M 作用后的网格', 14, 36);
+    var det = S.a*S.d - S.b*S.c;
+    ctx.fillStyle = (det < 0.02) ? accent2 : muted;
+    ctx.fillText(Math.abs(det) < 0.02 ? 'det = 0: 平面被压成一条线'
+                : (det < 0 ? 'det < 0: 平面被翻转' : 'det > 0: 方向保持不变'), 14, 52);
+  }
+
+  function sync(){
+    keys.forEach(function(k){
+      sl[k].value = S[k];
+      out[k].textContent = S[k].toFixed(2);
+    });
+    apex();
+    draw();
+  }
+
+  keys.forEach(function(k){
+    sl[k].addEventListener('input', function(){
+      S[k] = +sl[k].value;
+      out[k].textContent = S[k].toFixed(2);
+      presets.forEach(function(b){ b.setAttribute('aria-pressed', 'false'); });
+      apex();
+      draw();
+    });
+  });
+
+  presets.forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var m = btn.getAttribute('data-preset');
+      if (m === 'rot'){ S.a = 0.80; S.b = -0.60; S.c = 0.60; S.d = 0.80; }
+      if (m === 'shear'){ S.a = 1.00; S.b = 0.70; S.c = 0.00; S.d = 1.00; }
+      if (m === 'mirror'){ S.a = -1.00; S.b = 0.00; S.c = 0.00; S.d = 1.00; }
+      if (m === 'squash'){ S.a = 1.00; S.b = 0.60; S.c = 0.00; S.d = 0.35; }
+      presets.forEach(function(b){ b.setAttribute('aria-pressed', 'false'); });
+      btn.setAttribute('aria-pressed', 'true');
+      sync();
+    });
+  });
+
+  var ticker = NN.createTicker(root, function(){
+    var cw = cv.parentElement ? cv.parentElement.clientWidth : 0;
+    if (cw && Math.abs(cw - lastW) > 2) draw();
+  });
+  ticker.start();
+
+  if (window.Theme && window.Theme.on) window.Theme.on(draw);
+  window.addEventListener('resize', draw);
+  sync();
+});
+</script>

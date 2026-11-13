@@ -1,0 +1,558 @@
+<section class="ch" id="ch-06-train" data-num="06" data-title="训练循环">
+  <header class="ch-head">
+    <div class="ch-eyebrow"><span class="dot"></span>第 06 章 · 核心</div>
+    <h1 class="ch-title">训练循环</h1>
+    <p class="ch-sub">把前向、损失、反向、更新串成一个循环,并让它稳定收敛。</p>
+    <div class="ch-rule"></div>
+  </header>
+
+  <div class="prereq"><b>读前</b><span>第 05 章的反向传播与梯度;第 03 章的损失函数(MSE/交叉熵)、梯度下降与学习率</span><b>可跳过</b><span>6.1 的代码块只演示 API;6.3 的 AdamW/权重衰减推导、6.5 的方差数值推导可跳过,记住“按 fan_in 缩放”即可</span></div>
+
+  <p class="lead">会算梯度只是有了零件。真正把网络训练起来,是把取数据、前向传播、算损失、反向传播、更新参数这五个动作串成一个循环,再调好四个开关:损失函数、小批量(mini-batch)大小、优化器、学习率。这一章把这台机器完整装一遍,并用两个能亲手拖动的实验,让你看见每个开关拨错时损失曲线长什么样。</p>
+
+  <h3><span class="h3-n">6.1</span>一个循环,五个动作</h3>
+
+  <p>训练循环(training loop)的结构可以用五行伪代码写完,但每一行都对应一个能单独出错的地方。这五步跑完叫一步(step);把所有训练样本完整过一遍叫一个轮(epoch)。</p>
+
+  <ol class="steps">
+    <li><strong>取一个小批量(mini-batch)。</strong>从训练集里抽 <code>batch_size</code> 个样本。常见值是 32、64、256。</li>
+    <li><strong>前向传播(forward pass)。</strong>把小批量送进网络,得到每个样本的输出。</li>
+    <li><strong>算损失(loss)。</strong>用一个数概括这批输出和标签差多远。回归和分类用的不是同一个函数,6.2 节讲。</li>
+    <li><strong>反向传播(backpropagation)。</strong>从损失往回走,算出每个参数的梯度。</li>
+    <li><strong>更新并清零。</strong>优化器按梯度改参数,然后 <code>zero_grad()</code>。PyTorch 默认把梯度累加,忘记清零会让第二次迭代的梯度变成第一次的两倍,相当于学习率翻倍,而且越滚越大。</li>
+  </ol>
+
+  <p>先把“批”这个词说清。batch 指一次前向传播喂进网络的样本集合,按大小分三档:一次吃进全部训练样本叫全量批(full batch),整个训练集只有一个批,每个轮只更新一次;一次只吃 1 个样本叫单样本(stochastic),每看一个样本就更新一次;介于两者之间的叫小批量(mini-batch),通常取 32、64、256。平时说的“batch 大小”指的都是小批量的大小,本章统一叫小批量(mini-batch),代码里的 <code>batch_size</code> 就是它。三者在 60,000 个样本上跑完一个轮的更新次数差别很大:全量批 1 次,小批量 64 是 938 次,单样本 60,000 次。</p>
+
+  <p>数字感很重要。在 60,000 个样本上取小批量 64,一个轮是 938 步;跑 30 个轮就是 28,140 次参数更新。每次更新,网络只看 64 个样本。如果改成单样本,同样 30 个轮会更新 1,800,000 次,但每一步的梯度只来自一个样本,方向抖得厉害,GPU 也跑不满。全量批梯度(batch gradient descent)正好相反:每个轮只更新一次,方向很准,但一天也走不了几步。</p>
+
+  <p>打乱(shuffle)不是可选项。若数据按类别排序而你不打乱,一个小批量可能 64 个样本全是第 1 类,下一步全是第 2 类,参数被来回猛推。每个轮开始前重新打乱;总随机种子只在训练开始时初始化一次,既避免这种系统性偏置,又让实验可复现。</p>
+
+  <div class="code-wrap"><div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div><pre class="code"><code>import math, torch
+from torch import nn
+from torch.utils.data import DataLoader, TensorDataset
+
+torch.manual_seed(0)
+# 3 类螺旋,每类 200 点
+t = torch.linspace(0, 1, 200)
+X, Y = [], []
+for c in range(3):
+    a = t * 3.6 * math.pi + c * 2 * math.pi / 3
+    r = 0.15 + t * 1.8
+    X.append(torch.stack([r * torch.cos(a), r * torch.sin(a)], dim=1))
+    Y.append(torch.full((200,), c))
+X, Y = torch.cat(X), torch.cat(Y)
+loader = DataLoader(TensorDataset(X, Y), batch_size=32, shuffle=True)
+
+model = nn.Sequential(
+    nn.Linear(2, 64), nn.ReLU(),
+    nn.Linear(64, 64), nn.ReLU(),
+    nn.Linear(64, 3),
+)                                    # 4,547 个参数
+opt = torch.optim.AdamW(model.parameters(), lr=3e-3, weight_decay=1e-2)
+sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=30)
+loss_fn = nn.CrossEntropyLoss()
+
+for epoch in range(30):
+    model.train()
+    for xb, yb in loader:            # shuffle=True 每个轮重新打乱
+        opt.zero_grad()
+        loss = loss_fn(model(xb), yb)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        opt.step()
+    sched.step()                     # 每个轮末降一次学习率
+    model.eval()
+    with torch.no_grad():            # 评估不建计算图
+        acc = (model(X).argmax(1) == Y).float().mean().item()
+    print(epoch, round(loss.item(), 4), round(acc, 3))</code></pre></div>
+
+  <p>这段代码里有三个容易漏的细节。<code>model.train()</code> 和 <code>model.eval()</code> 会切换 BatchNorm 与 Dropout 的行为,评估时忘了切,数字会莫名其妙地差一截;<code>with torch.no_grad()</code> 让评估不建计算图,显存少一大半;变量 <code>loss</code> 是最后一个小批量的,不是整个轮的平均,想看真实曲线要自己累加。</p>
+
+  <h3><span class="h3-n">6.2</span>损失函数选错,梯度就错了</h3>
+
+  <p>损失函数(loss function)把“预测得好不好”压缩成一个标量。它的选择不是审美问题:同一个网络,损失选错,梯度就错了,后面换什么优化器都救不回来。</p>
+
+  <h4>回归:均方误差</h4>
+
+  <p>预测房价、温度这类连续值时,用均方误差(mean squared error, MSE),其中 Σ 是求和(sum):</p>
+
+  <div class="math"><var>L</var> = (1/2<var>n</var>) Σ (<var>p</var><sub>i</sub> − <var>y</var><sub>i</sub>)²</div>
+
+  <p>前面的 1/2 只是为了让求导后少一个因子 2,不影响最优解。平方让正负误差不会互相抵消,也让大误差的惩罚更重:误差 2 的惩罚是误差 1 的 4 倍。开根号得到 RMSE,单位和标签一致,汇报时更好懂。</p>
+
+  <h4>分类:交叉熵</h4>
+
+  <p>分类网络的最后一层先输出 K 个得分,叫 logit。softmax 把 logit 变成和为 1 的概率,交叉熵(cross-entropy)只关心正确类别的那个概率:</p>
+
+  <div class="math"><var>L</var> = − Σ<sub>c</sub> <var>y</var><sub>c</sub> log <var>p</var><sub>c</sub></div>
+
+  <p>标签是独热(one-hot)时,求和里只有真实类别那一项非零,所以 L = −log p<sub>true</sub>。代入几个数:p=0.9 时损失 0.105;p=0.5 时 0.693;p=0.1 时 2.303;p=0.01 时 4.605。概率越接近 0,惩罚增长得越快,而且没有上界。</p>
+
+  <h4>为什么分类不用 MSE</h4>
+
+  <p>关键不在损失数值,而在梯度。以二分类的 sigmoid 输出为例,记网络输出概率为 p:交叉熵对 logit 的梯度是 p − y;MSE 的梯度是 (p − y) · p(1 − p),多乘了一个饱和因子。真实标签 y=1、预测 p=0.01 时,前者是 −0.99,后者是 −0.99 × 0.0099 ≈ −0.0098,小了 100 倍。预测错得越离谱,梯度反而越小,网络学得越慢,这叫饱和(saturation)。多分类的 softmax 上,交叉熵的梯度仍是 p<sub>k</sub> − y<sub>k</sub>;MSE 也带同样的饱和因子,只是每一项还与其他类别的概率耦合,形式更复杂,结论不变。</p>
+
+  <ul class="list">
+    <li>MSE 把 one-hot 当成连续目标回归,隐含“类别之间有距离、有顺序”。对无序类别,这个假设是错的。</li>
+    <li>按本章公式(带 1/2)对类别求平方和时,每一项最多是 0.5,三分类的总损失封顶 1.5;哪怕网络把 99% 的把握押在错误类别上,也只有 ½[(1−0.01)² + 0.99² + 0²] ≈ 0.98。同一个预测的交叉熵是 −log 0.01 = 4.605,而且随着正确类概率趋近 0 还能继续增大。</li>
+    <li>交叉熵配上 softmax,梯度形式干净到只剩 p−y,数值稳定,这是它成为分类默认选择的主要原因。</li>
+  </ul>
+
+  <details class="fold"><summary>点开看:softmax + 交叉熵的梯度为什么是 p−y</summary><div class="fold-body">
+    <p>softmax 的定义是 p<sub>k</sub> = e<sup>z<sub>k</sub></sup> / Σ<sub>j</sub> e<sup>z<sub>j</sub></sup>。对 logit z<sub>k</sub> 求导,要分 k 是否等于真实类别两种情况,结果是 ∂L/∂z<sub>k</sub> = p<sub>k</sub> − y<sub>k</sub>(∂ 是偏导,partial derivative)。也就是说,每个 logit 收到的推力,正好是“预测概率减标签”。预测 0.01、标签 1,推力就是 −0.99;预测 0.99、标签 0,推力就是 +0.99。框架把 softmax 和交叉熵合成一个算子,就是为了直接得到这个稳定形式,避免先算概率再取对数时的数值问题。</p>
+    <div class="math math-note">∂L/∂z<sub>k</sub> = p<sub>k</sub> − y<sub>k</sub></div>
+  </div></details>
+
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>任务</th><th>输出层</th><th>损失</th><th>PyTorch</th></tr></thead>
+    <tbody>
+      <tr><td>回归</td><td>1 个线性输出</td><td>均方误差</td><td><code>nn.MSELoss()</code></td></tr>
+      <tr><td>二分类</td><td>1 个 logit + sigmoid</td><td>二元交叉熵</td><td><code>nn.BCEWithLogitsLoss()</code></td></tr>
+      <tr><td>多分类</td><td>K 个 logit + softmax</td><td>交叉熵</td><td><code>nn.CrossEntropyLoss()</code></td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="callout tip"><b>PyTorch 的一个常见坑</b><p><code>nn.CrossEntropyLoss()</code> 内部已经做了 log-softmax。模型最后直接输出 logits,不要再套一层 <code>nn.Softmax()</code>;否则等于把概率又当成 logit 归一化一次,输出分布被压得接近均匀,传回参数的梯度变得很小,损失几乎不动,而你还在怀疑学习率。</p></div>
+
+  <div class="quiz" data-id="q-06-1">
+    <p class="q">二分类任务,真实标签 y=1,网络经 sigmoid 输出概率 p=0.01。关于交叉熵和 MSE 对 logit 的梯度,哪个说法对?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-ok data-why="对。sigmoid 配交叉熵时,对 logit 的梯度是 p−y = 0.01−1 = −0.99;MSE 是 (p−y)·p(1−p) = −0.99×0.01×0.99 ≈ −0.0098,小了 100 倍。">
+        A. 交叉熵的梯度是 p−y = −0.99;MSE 被 p(1−p) 压到约 −0.0098,学得慢得多
+      </button>
+      <button class="opt" data-k="B" data-why="MSE 的损失值确实不大,但决定学得快慢的是它对 logit 的梯度,不是损失值。这里 MSE 的梯度要乘 p(1−p)=0.0099,实际只有 −0.0098;平方惩罚重不等于梯度大。">
+        B. MSE 更好,因为误差 0.99 平方后惩罚更重,梯度也更大
+      </button>
+      <button class="opt" data-k="C" data-why="两者不一样。交叉熵对 logit 的梯度是 p−y,与概率误差成线性;MSE 是 (p−y)·p(1−p),多了一个在 p 接近 0 或 1 时趋于 0 的因子。正是这个因子让错得越狠、梯度越小。">
+        C. 两者的梯度完全一样,只是损失的数值范围不同
+      </button>
+      <button class="opt" data-k="D" data-why="交叉熵定义在任意 K 类的 softmax 上,二分类只是 K=2 的特例,多分类是标准做法。MSE 用于分类才会遇到饱和和类别有序假设的问题。">
+        D. 分类必须用 MSE,交叉熵只能用于二分类
+      </button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">6.3</span>优化器:同一个梯度,三种走法</h3>
+
+  <p>有了梯度 g,最朴素的更新是梯度下降(gradient descent);这里 θ 是全部参数,η 是学习率,← 表示赋值:</p>
+
+  <div class="math"><var>θ</var> ← <var>θ</var> − <var>η</var> · <var>g</var></div>
+
+  <p>η 是学习率(learning rate),g 是损失对参数的梯度。SGD(stochastic gradient descent,随机梯度下降)的毛病是它对所有参数、所有方向用同一个步长。损失面像一个狭长的峡谷时,横跨峡谷的方向很陡,沿谷底的方向很平;同一个 η 在陡的方向来回震荡,在平的方向又走得太慢。</p>
+
+  <p>动量(momentum)让梯度先经过一个滑动平均,再拿去更新:</p>
+
+  <div class="math"><var>v</var> ← <var>β</var><var>v</var> − <var>η</var><var>g</var>;&nbsp;&nbsp; <var>θ</var> ← <var>θ</var> + <var>v</var></div>
+
+  <p>β=0.9 时,速度大约记住最近 1/(1−0.9)=10 步的梯度:方向一致的梯度累加,来回变化的梯度互相抵消。效果是在峡谷底部越走越快,横跨峡谷的震荡被压住。</p>
+
+  <p>Adam(adaptive moment estimation,自适应矩估计;矩即平均值 moment)再进一步,同时估计梯度的一阶矩和二阶矩:</p>
+
+  <div class="math"><var>m</var> ← <var>β</var><sub>1</sub><var>m</var> + (1−<var>β</var><sub>1</sub>)<var>g</var>;&nbsp; <var>v</var> ← <var>β</var><sub>2</sub><var>v</var> + (1−<var>β</var><sub>2</sub>)<var>g</var>²;&nbsp; <var>θ</var> ← <var>θ</var> − <var>η</var> · <var>m̂</var> / (√<var>v̂</var> + <var>ε</var>)</div>
+
+  <p>m̂ 和 v̂ 是偏差修正后的矩估计。用 √v 去除梯度,等于给每个参数单独缩放:梯度长期很大的参数不会一步跨太远,梯度长期很小的参数也不会被淹没,每个参数的有效步长都接近 η。默认值 β<sub>1</sub>=0.9、β<sub>2</sub>=0.999、ε=1e-8,学习率 1e-3。代价是每个参数要多存两份状态,优化器显存约为参数量的 3 倍;有些任务上,精心调过的 SGD 加动量泛化略好。大模型常用 AdamW,它把权重衰减(weight decay)从梯度里拆出来,正则项不再被自适应缩放扭曲。这里容易混淆:权重衰减和 L2 正则只在普通 SGD 下等价——在损失里加 λ‖θ‖²/2(‖·‖ 是向量长度,norm),梯度多出 λθ,每步就变成 θ ← θ − η(g + λθ),与直接按比例缩小权重是同一件事;换成 Adam 后,λθ 被并入梯度再被 √v 自适应缩放,每个参数的实际衰减强度不再一致。AdamW 把它拆出来,直接对参数乘 (1 − ηλ),才是真正的权重衰减。第 7 章讲正则化时会再回到这个区别。</p>
+
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>优化器</th><th>解决什么问题</th><th>典型学习率</th><th>额外显存</th></tr></thead>
+    <tbody>
+      <tr><td>SGD</td><td>无,最朴素的梯度下降</td><td>0.01 – 0.1</td><td>0</td></tr>
+      <tr><td>动量</td><td>峡谷里的来回震荡;一致的梯度方向加速</td><td>0.01 – 0.1(β=0.9)</td><td>1 份</td></tr>
+      <tr><td>Adam</td><td>各参数梯度尺度差异大;稀疏梯度</td><td>1e-4 – 3e-3</td><td>2 份</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="demo" id="d-06-opt">
+    <div class="demo-bar"><span class="live">交互</span><span>三种优化器同时训练螺旋数据</span><span class="sp"></span><span class="tag">同起点 · 同小批量</span></div>
+    <div class="demo-body">
+      <div class="grid-3">
+        <div class="card"><div class="card-h">SGD</div><div class="canvas-wrap"><canvas id="cv-06-opt-sgd" height="190"></canvas></div></div>
+        <div class="card"><div class="card-h">动量 0.9</div><div class="canvas-wrap"><canvas id="cv-06-opt-mom" height="190"></canvas></div></div>
+        <div class="card"><div class="card-h">Adam</div><div class="canvas-wrap"><canvas id="cv-06-opt-adam" height="190"></canvas></div></div>
+      </div>
+      <div class="canvas-wrap"><canvas id="cv-06-opt-loss" height="210"></canvas></div>
+      <div class="stat-row">
+        <div class="stat"><b id="o-06-sgd-loss">1.500</b><span>SGD 损失</span></div>
+        <div class="stat"><b id="o-06-mom-loss">1.500</b><span>动量损失</span></div>
+        <div class="stat"><b id="o-06-adam-loss">1.500</b><span>Adam 损失</span></div>
+        <div class="stat"><b id="o-06-steps">0</b><span>更新步数</span></div>
+      </div>
+      <div class="controls">
+        <div class="ctl"><label for="s-06-lr">学习率 <output id="o-06-lr">0.030</output></label><input id="s-06-lr" type="range" min="0" max="100" step="0.02" value="68.34"></div>
+        <div class="ctl"><label for="s-06-batch">小批量大小 <output id="o-06-batch">32</output></label><input id="s-06-batch" type="range" min="8" max="64" step="8" value="32"></div>
+        <button class="btn" id="b-06-opt-pause">暂停</button>
+        <button class="btn sm" id="b-06-opt-reset">重新开始</button>
+      </div>
+    </div>
+    <div class="demo-hint">三个网络结构相同([2,16,16,3],371 个参数)、初始权重相同、每步喂同一批数据,已经先训练了 480 步。拖动学习率会立刻改变后续步长;小批量越大每步梯度越稳,但同样数据量(一个轮)下参数更新的步数更少。注意 Adam 在 0.2 时停在 1.10 附近,正好是 ln 3,也就是随机猜测,不是抖动而是彻底失效。</div>
+  </div>
+
+  <p>默认学习率 0.03、小批量 32 时,预训练的 480 步里 Adam 把损失压到 0.815,动量还在 1.025,plain SGD 是 1.049:它没有坏,只是在螺旋这种曲率变化剧烈的面上,同一个步长对某些方向太大、对另一些方向太小。继续跑到 1,500 步,Adam 降到 0.203,动量 0.575,SGD 仍有 1.020。把学习率拖到 0.2,Adam 反而停在 1.10 附近不再下降,那正好是三分类随机猜测的损失 ln 3 = 1.099:步长太大,参数被推进所有 ReLU 单元都失活的区域,输出退化成均匀分布,再训练也回不来。</p>
+
+  <h3><span class="h3-n">6.4</span>学习率与调度</h3>
+
+  <p>如果只能调一个超参数,调学习率。它决定每步走多远:太小,参数几乎不动;太大,一步跨过谷底,损失震荡甚至变成 NaN。本章第二个演示用同一个初始化、同一个随机种子、小批量 32,让 Adam 跑 200 步:学习率 0.0001 时损失只从 1.500 降到 1.316;0.05 时降到 0.725;把滑块拉到 1,过程中损失冲到 18.4,最后停在 1.117,比 0.05 差得多。</p>
+
+  <p>为什么会有硬上限:把损失面在某点附近近似成曲率为 L 的碗,梯度下降稳定的条件是学习率低于 2/L。超过这条线,每一步把误差放大 |1−ηL| 倍,训练从指数下降翻转成指数上升。深度网络的 L 随位置变化,所以这个上限只能靠实验找,但“损失突然爆炸就先把学习率除以 10”这条经验几乎总是对的。</p>
+
+  <p>学习率调度(lr schedule)是在训练过程中主动改变 η,常见三种做法:</p>
+
+  <ul class="list">
+    <li><strong>阶梯衰减(step decay)。</strong>每 30 个轮把学习率乘 0.1。实现最简单,曲线会有明显台阶。</li>
+    <li><strong>余弦退火(cosine annealing)。</strong>按 η<sub>t</sub> = η<sub>min</sub> + ½(η<sub>max</sub> − η<sub>min</sub>)(1 + cos(πt/T)) 从峰值平滑降到接近 0,t 是当前步,T 是总步数。前期大步走,后期小步收,不需要猜在哪个轮降。</li>
+    <li><strong>预热(warmup)。</strong>最初 500 步从 0 线性升到峰值。训练初期 Adam 的二阶矩估计还很粗糙,直接上大学习率容易炸。大模型常在 100,000 步里用 2,000 步预热。</li>
+  </ul>
+
+  <div class="demo" id="d-06-lr">
+    <div class="demo-bar"><span class="live">交互</span><span>学习率扫描:200 步后损失</span><span class="sp"></span><span class="tag">Adam · 小批量 32</span></div>
+    <div class="demo-body">
+      <div class="controls">
+        <div class="ctl"><label for="s-06-sweep">学习率(对数刻度)<output id="o-06-sweep">0.0500</output></label><input id="s-06-sweep" type="range" min="-4" max="0" step="0.01" value="-1.3"></div>
+        <button class="btn" id="b-06-lr-run">重新跑 200 步</button>
+      </div>
+      <div class="canvas-wrap"><canvas id="cv-06-lr-ruler" height="96"></canvas></div>
+      <div class="canvas-wrap"><canvas id="cv-06-lr-curve" height="210"></canvas></div>
+      <div class="stat-row">
+        <div class="stat"><b id="o-06-lrloss">0.725</b><span>200 步后损失</span></div>
+        <div class="stat"><b id="o-06-lrstep">200</b><span>当前步数</span></div>
+        <div class="stat"><b id="o-06-lrstatus">刚好</b><span>判断</span></div>
+      </div>
+      <p><span class="pill" id="o-06-lrdetail">峰值 1.19 · 最终 0.725</span></p>
+    </div>
+    <div class="demo-hint">滑块横跨 0.0001 到 1,每次改变都会用同一个初始化、同一个种子重跑 200 步。红色区从 0.15 开始:那里 Adam 的峰值损失已经超过 2.2,再往右会冲到 18 以上;最左端 200 步几乎不动。三个区间的边界是这次实验测出来的,不是通用常数。</div>
+  </div>
+
+  <p>扫描时不要只盯最终值,要看曲线形状:太小的学习率曲线是一条几乎水平的线;刚好时前 50 步下降最快,后面逐渐变缓;太大时会先出现一个尖峰再回落,或者一路向上。后者最危险,因为最终损失可能看起来“还行”,但权重已经被推到很远的区域,模型实际很差。</p>
+
+  <h3><span class="h3-n">6.5</span>权重初始化:不要全零,也不要乱缩放</h3>
+
+  <p>初始化(weight initialization)决定训练开始时信号有多强。最糟的选择不是随机,而是全零。</p>
+
+  <p>假设一个隐藏层有 16 个 ReLU 单元,权重和偏置全 0。输入相同,16 个单元的输出都是 0;反向传播时,输出层的误差要先乘输出层权重才能传回隐藏层,而输出层权重也是 0,所以隐藏层收到的梯度全是 0。这些参数一步都不会更新。输出层自己的权重乘的是隐藏层激活 0,同样不动;只有输出偏置还能改,网络最终退化成一个与输入无关的常数预测器,无论喂什么,三类概率都一样。即使把偏置设成非零,同一层 16 个单元仍会永远收到完全相同的梯度、保持完全相同的参数,16 个单元等价于 1 个。随机初始化首先是用来打破这个对称性的。</p>
+
+  <p>但随机的幅度也要对。设每层权重标准差为 s(标准差就是波动的典型大小)、输入维度 fan_in=1024,输出方差约放大 1024·s² 倍(方差是波动的平方,variance)。若 s=1.0,每层放大 √1024=32 倍,10 层就是 32<sup>10</sup> ≈ 1.1×10<sup>15</sup>。这个数本身还没到 float32 的上限(约 3.4×10<sup>38</sup>),但信号已经放大了 15 个数量级,再深几层、或者换成 float16(上限约 6.5×10<sup>4</sup>),第一次前向就会溢出;若 s=0.01,每层乘 0.32,10 层后只剩 0.32<sup>10</sup> ≈ 1.1×10<sup>-5</sup>,信号缩小到几乎消失——它离 float32 的下溢界限(最小正规数约 1.2×10<sup>-38</sup>)还很远,但已经比正常输入小五个数量级,激活值会被数值误差淹没。要维持方差,s 应当是 1/√fan_in。ReLU 把一半单元置零,方差再减半,所以 He 初始化用 √(2/fan_in);tanh 和 sigmoid 用 Xavier 初始化 √(2/(fan_in+fan_out))。</p>
+
+  <p>PyTorch 里一行就够:<code>nn.init.kaiming_normal_(m.weight, nonlinearity='relu')</code>,偏置置 0。残差连接和归一化让深层网络对初始化的敏感度下降,但“不要全零、按 fan_in 缩放”这两条仍然成立。</p>
+
+  <div class="quiz" data-id="q-06-2">
+    <p class="q">把一个 2→16→16→3 的网络所有参数初始化为 0(偏置也置 0),用交叉熵训练,会发生什么?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-ok data-why="对。隐藏层梯度要先乘输出层权重,而权重全为 0,所以隐藏层梯度恒为 0,参数一步不更新;输出权重又乘上隐藏层激活 0,也不动。只有输出偏置能改,网络退化成与输入无关的常数预测器。">
+        A. 隐藏层梯度恒为 0,参数不更新;输出权重也因激活为 0 而不动,网络只会调输出偏置,退化成常数预测器
+      </button>
+      <button class="opt" data-k="B" data-why="不是起步慢。分化需要不同的梯度,零初始化下同一层每个单元收到的梯度逐位相同(本例隐藏层直接是 0),没有任何扰动让它们分开,训练多久都不会自己恢复。">
+        B. 训练正常,只是前几百步慢一点,之后各单元会自己分化
+      </button>
+      <button class="opt" data-k="C" data-why="零初始化不会产生 NaN。前向输出是有限的 0,隐藏层梯度也是有限的 0;NaN 通常来自 log(0)、除零或数值溢出,不是来自权重为零。">
+        C. 梯度会立刻变成 NaN,训练无法启动
+      </button>
+      <button class="opt" data-k="D" data-why="输出均匀分布对应 −log(1/3)=1.099 的损失,而且隐藏层完全不学。概率合法只说明它是个合法的分布,不代表它是有用的分类器;这个常数预测器不会随数据改变。">
+        D. 输出层会给出均匀分布,概率合法,所以模型仍然有效
+      </button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">6.6</span>梯度消失、梯度爆炸与归一化</h3>
+
+  <p>梯度消失(vanishing gradient)和梯度爆炸(exploding gradient)来自同一件事:反向传播是雅可比矩阵的连乘。</p>
+
+  <p>50 层网络,如果每层把梯度平均缩小到 0.8 倍,传到第一层只剩 0.8<sup>50</sup> ≈ 1.4×10<sup>-5</sup>;如果每层放大 1.2 倍,则是 1.2<sup>50</sup> ≈ 9,100。前者表现为浅层权重几乎不动、只有最后几层在学习;后者表现为损失突然变成 NaN,或者梯度范数达到几千。</p>
+
+  <p>对策按成本从低到高:ReLU 代替 sigmoid(正区间导数恒为 1)、He 初始化、残差连接(residual connection,把输入直接加到输出上,给梯度一条短路)、归一化、梯度裁剪(gradient clipping)。裁剪把整个梯度向量的长度缩到不超过阈值,方向不变:若范数是 25、阈值是 1,就整体乘 0.04。</p>
+
+  <p>归一化(normalization)把每层输入的尺度拉回可控范围。批归一化(BatchNorm)对一个小批量内同一特征做标准化,再乘可学习的 γ、加 β:</p>
+
+  <div class="math"><var>x̂</var> = (<var>x</var> − <var>μ</var><sub>B</sub>) / √(<var>σ</var><sub>B</sub>² + <var>ε</var>);&nbsp;&nbsp; <var>y</var> = <var>γ</var><var>x̂</var> + <var>β</var></div>
+
+  <p>训练时 μ<sub>B</sub>、σ<sub>B</sub> 来自当前小批量,推理时用训练期间累计的滑动平均(动量 0.1)。这带来一个限制:小批量太小时统计量不准,只喂 1 个样本直接失效。</p>
+
+  <p>层归一化(LayerNorm)对单个样本的所有特征做标准化,与小批量无关。序列长度可变、小批量很小时也能用,所以 Transformer 几乎都用它:GPT-3 有 96 层,每层两个 LayerNorm。一句话区分:BatchNorm 跨样本、同特征;LayerNorm 跨特征、同样本。</p>
+
+  <div class="callout warn"><b>常见误解:学习率调大,收敛更快</b><p>学习率有硬上限。对曲率为 L 的二次损失,η 超过 2/L 后,每步误差放大 |1−ηL| 倍,训练不是变快,而是从指数下降翻转成指数上升。本章第二个演示里,lr=1 的 Adam 在 200 步内把损失冲到 18.4,最后停在 1.117,比 lr=0.05 的 0.725 差得多。看到损失突然变成 NaN,先把学习率除以 10,不要继续加步数。</p></div>
+
+  <div class="callout tip"><b>省时间的自检:先在一个小批量上过拟合</b><p>拿 32 个样本,关掉打乱,训练 200 步,看损失能不能降到 0.01 以下。能,说明前向、损失、反向、更新这条链路是通的,再去调全量数据;不能,问题一定在代码或损失函数里,调学习率没用。</p></div>
+
+  <h3><span class="h3-n">6.7</span>把顺序固定下来</h3>
+
+  <p>把这一章压成一张操作顺序:</p>
+
+  <ol class="steps">
+    <li>确定任务,选损失:回归用 MSE,分类用交叉熵;分类模型直接输出 logits。</li>
+    <li>按 fan_in 初始化(ReLU 用 He,tanh 用 Xavier),不要全零。</li>
+    <li>选优化器:先 Adam、学习率 1e-3;需要榨性能时换 SGD 加动量,配余弦退火。</li>
+    <li>小批量取 32–256,每个轮打乱;记录每个轮的平均损失,不是最后一个小批量的。</li>
+    <li>先跑 200–500 步看损失是否稳定下降;出现 NaN 就把学习率除以 10。</li>
+    <li>深层网络加归一化与残差;梯度范数超过阈值就裁剪到 1.0。</li>
+    <li>每个轮末切到 eval 模式评估,不要用训练损失下结论。</li>
+  </ol>
+
+  <p>这套循环在 4,547 个参数的网络上和在 70 亿参数的模型上是同一个循环,差别只在数据量、并行方式和调度细节。下一章处理循环之外的第一个问题:训练损失很低、测试损失很高,到底发生了什么。</p>
+
+  <div class="ch-foot">
+    <span class="state" data-state></span>
+    <span class="sp"></span>
+    <a class="btn" href="#ch-07-generalize">下一章 →</a>
+  </div>
+</section>
+
+<script>
+defineDemo('d-06-opt', function(root){
+  var q = function(s){ return root.querySelector(s); };
+  var data = window.Data.spiral(240, 3, 17);
+  var bounds = window.Data.bounds(data, 0.2);
+  var evalSet = data.filter(function(_, i){ return i % 5 === 0; });
+  var cvs = [q('#cv-06-opt-sgd'), q('#cv-06-opt-mom'), q('#cv-06-opt-adam')];
+  var lossCv = q('#cv-06-opt-loss');
+  var names = ['SGD', '动量', 'Adam'];
+  var kinds = ['sgd', 'momentum', 'adam'];
+  var cols = ['--c1', '--c2', '--c3'];
+  var statEls = [q('#o-06-sgd-loss'), q('#o-06-mom-loss'), q('#o-06-adam-loss')];
+  var lrIn = q('#s-06-lr'), batchIn = q('#s-06-batch');
+  var lrOut = q('#o-06-lr'), batchOut = q('#o-06-batch'), stepOut = q('#o-06-steps');
+  var pauseBtn = q('#b-06-opt-pause'), resetBtn = q('#b-06-opt-reset');
+  if (!data || !lossCv || !cvs[0]) return;
+
+  var CAP = 1800, PRETRAIN = 480;
+  var nets = [], steps = 0, curves = [[], [], []], order = [], pos = 0;
+  var paused = false, done = false, frame = 0;
+  var rng = NN.mulberry32(2024);
+  var plot = null;
+
+  function lrValue(){ return 0.0005 * Math.pow(400, (+lrIn.value) / 100); }
+  function lrText(v){ return v >= 0.01 ? v.toFixed(3) : v.toFixed(4); }
+  function reshuffle(){
+    order = data.map(function(_, i){ return i; });
+    NN.shuffle(order, rng);
+    pos = 0;
+  }
+  function takeBatch(n){
+    if (pos + n > order.length) reshuffle();
+    var b = [];
+    for (var i = 0; i < n; i++) b.push(data[order[pos + i]]);
+    pos += n;
+    return b;
+  }
+  function trainOnce(){
+    var b = takeBatch(+batchIn.value);
+    var l = lrValue();
+    for (var k = 0; k < 3; k++) nets[k].step(b, l, { opt: kinds[k], momentum: 0.9 });
+    steps++;
+    if (steps % 4 === 0) record();
+  }
+  function seriesData(){
+    return names.map(function(nm, i){ return { name: nm, color: cols[i], data: curves[i] }; });
+  }
+  function record(){
+    for (var k = 0; k < 3; k++){
+      var v = nets[k].loss(evalSet);
+      if (!isFinite(v)) v = 8;
+      curves[k].push([steps, Math.min(v, 8)]);
+      statEls[k].textContent = NN.fmt(v, 3);
+    }
+    stepOut.textContent = steps;
+    if (plot) plot.set({ series: seriesData() });
+  }
+  function drawBounds(){
+    if (root.offsetParent === null) return;
+    for (var k = 0; k < 3; k++){
+      NN.renderBoundary(cvs[k], nets[k], {
+        points: data, bounds: bounds, height: 190, soft: true, res: 40
+      });
+    }
+  }
+  function reset(pretrain){
+    nets = [0, 1, 2].map(function(){
+      return new NN.MLP([2, 16, 16, 3], { act: 'relu', out: 'softmax', seed: 6 });
+    });
+    steps = 0; curves = [[], [], []]; rng = NN.mulberry32(2024); reshuffle();
+    frame = 0; paused = false; done = false;
+    pauseBtn.textContent = '暂停';
+    for (var i = 0; i < 3; i++) statEls[i].textContent = '—';
+    for (var j = 0; j < pretrain; j++) trainOnce();
+    stepOut.textContent = steps;
+    if (plot) plot.set({ series: seriesData() });
+    drawBounds();
+  }
+
+  reset(PRETRAIN);
+  plot = new NN.Plot(lossCv, {
+    xLabel: '更新步数', yLabel: '交叉熵损失',
+    series: seriesData(), height: 210, yTicks: 4
+  });
+  lrOut.textContent = lrText(lrValue());
+
+  lrIn.addEventListener('input', function(){ lrOut.textContent = lrText(lrValue()); });
+  batchIn.addEventListener('input', function(){ batchOut.textContent = batchIn.value; });
+  pauseBtn.addEventListener('click', function(){
+    if (done) return;
+    paused = !paused;
+    pauseBtn.textContent = paused ? '继续' : '暂停';
+  });
+  resetBtn.addEventListener('click', function(){ reset(0); });
+  if (window.Theme) window.Theme.on(function(){ drawBounds(); });
+
+  var ticker = NN.createTicker(root, function(){
+    if (done || paused) return;
+    for (var i = 0; i < 2 && steps < CAP; i++) trainOnce();
+    frame++;
+    if (frame % 6 === 0) drawBounds();
+    if (steps >= CAP){
+      done = true;
+      drawBounds();
+      pauseBtn.textContent = '已完成';
+    }
+  });
+  ticker.start();
+});
+
+defineDemo('d-06-lr', function(root){
+  var q = function(s){ return root.querySelector(s); };
+  var data = window.Data.spiral(240, 3, 17);
+  var evalSet = data.filter(function(_, i){ return i % 4 === 0; });
+  var sweep = q('#s-06-sweep'), out = q('#o-06-sweep');
+  var curveCv = q('#cv-06-lr-curve'), rulerCv = q('#cv-06-lr-ruler');
+  var lossEl = q('#o-06-lrloss'), stepEl = q('#o-06-lrstep'), statusEl = q('#o-06-lrstatus');
+  var detailEl = q('#o-06-lrdetail'), runBtn = q('#b-06-lr-run');
+  if (!data || !curveCv || !rulerCv) return;
+
+  var TARGET = 200, BATCH = 32;
+  var net = null, order = [], pos = 0, steps = 0, points = [];
+  var running = false, finalLoss = 1.5, peak = 0, timer = null;
+  var rng = NN.mulberry32(77);
+  var plot = new NN.Plot(curveCv, {
+    xLabel: '更新步数', yLabel: '交叉熵(截断 3)',
+    xRange: [0, TARGET], yRange: [0, 3],
+    series: [{ name: '损失', color: '--c1', data: [] }],
+    height: 210, legend: false, yTicks: 4
+  });
+
+  function lrValue(){ return Math.pow(10, +sweep.value); }
+  function lrText(v){
+    if (v >= 0.1) return v.toFixed(2);
+    if (v >= 0.01) return v.toFixed(3);
+    if (v >= 0.001) return v.toFixed(4);
+    return v.toFixed(5);
+  }
+  function reshuffle(){
+    order = data.map(function(_, i){ return i; });
+    NN.shuffle(order, rng);
+    pos = 0;
+  }
+  function runStep(){
+    if (pos + BATCH > order.length) reshuffle();
+    var b = [];
+    for (var i = 0; i < BATCH; i++) b.push(data[order[pos + i]]);
+    pos += BATCH;
+    net.step(b, lrValue(), { opt: 'adam' });
+    steps++;
+    var L = net.loss(evalSet);
+    finalLoss = L;
+    if (!isFinite(L)) peak = Infinity;
+    else peak = Math.max(peak, L);
+    points.push([steps, Math.min(isFinite(L) ? L : 3, 3)]);
+  }
+  function statusShort(){
+    if (!isFinite(peak) || peak > 2.2) return '太大';
+    if (finalLoss > 1.08) return '太小';
+    return '刚好';
+  }
+  function detailText(){
+    if (!isFinite(peak)) return '峰值 NaN · 最终 NaN';
+    return '峰值 ' + NN.fmt(peak, 2) + ' · 最终 ' + NN.fmt(finalLoss, 3);
+  }
+  function paint(){
+    lossEl.textContent = isFinite(finalLoss) ? NN.fmt(finalLoss, 3) : 'NaN';
+    stepEl.textContent = steps;
+    statusEl.textContent = running ? '扫描中' : statusShort();
+    if (detailEl) detailEl.textContent = running ? ('正在跑第 ' + steps + ' 步') : detailText();
+    plot.set({ series: [{ name: '损失', color: '--c1', data: points.slice() }] });
+  }
+  function start(pretrain){
+    net = new NN.MLP([2, 16, 16, 3], { act: 'relu', out: 'softmax', seed: 6 });
+    steps = 0; points = []; peak = 0; finalLoss = 1.5;
+    rng = NN.mulberry32(77); reshuffle();
+    for (var i = 0; i < pretrain; i++) runStep();
+    running = pretrain < TARGET;
+    paint();
+    drawRuler();
+  }
+  function drawRuler(){
+    if (rulerCv.offsetParent === null) return;
+    var r = NN.fitCanvas(rulerCv, 96);
+    var ctx = r.ctx, w = r.w;
+    ctx.clearRect(0, 0, w, 96);
+    var pad = 8, top = 20, bot = 52;
+    function X(lv){ return pad + (Math.log10(lv) + 4) / 4 * (w - pad * 2); }
+    function band(a, b, col){
+      var c = NN.hexToRgb(col);
+      ctx.fillStyle = NN.rgba(c, 0.16);
+      ctx.fillRect(X(a), top, X(b) - X(a), bot - top);
+      ctx.strokeStyle = NN.rgba(c, 0.55);
+      ctx.lineWidth = 1;
+      ctx.strokeRect(X(a) + 0.5, top + 0.5, X(b) - X(a) - 1, bot - top - 1);
+    }
+    band(0.0001, 0.0008, NN.token('--muted', '#888'));
+    band(0.0008, 0.15, NN.token('--ok', '#1a9'));
+    band(0.15, 1, NN.token('--err', '#c33'));
+
+    var ticks = [0.0001, 0.001, 0.01, 0.1, 1];
+    var labels = ['0.0001', '0.001', '0.01', '0.1', '1'];
+    ctx.font = '11px "JetBrains Mono", ui-monospace, monospace';
+    ctx.fillStyle = NN.token('--muted', '#777');
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    for (var i = 0; i < ticks.length; i++){
+      var x = X(ticks[i]);
+      ctx.strokeStyle = NN.token('--line', '#ddd');
+      ctx.beginPath(); ctx.moveTo(x, bot); ctx.lineTo(x, bot + 4); ctx.stroke();
+      ctx.fillText(labels[i], Math.max(18, Math.min(w - 18, x)), bot + 7);
+    }
+
+    var cx = X(NN.clamp(lrValue(), 0.0001, 1));
+    ctx.strokeStyle = NN.token('--ink', '#111');
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(cx, 13); ctx.lineTo(cx, bot + 2); ctx.stroke();
+    ctx.fillStyle = NN.token('--ink', '#111');
+    ctx.beginPath(); ctx.moveTo(cx, 13); ctx.lineTo(cx - 5, 6); ctx.lineTo(cx + 5, 6); ctx.closePath(); ctx.fill();
+
+    var items = [
+      [NN.token('--muted', '#888'), '太小学不动'],
+      [NN.token('--ok', '#1a9'), '刚好'],
+      [NN.token('--err', '#c33'), '太大发散']
+    ];
+    ctx.font = '11px "Noto Sans SC", sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    var lx = pad;
+    for (var j = 0; j < items.length; j++){
+      var c2 = NN.hexToRgb(items[j][0]);
+      ctx.fillStyle = NN.rgba(c2, 0.85);
+      ctx.fillRect(lx, 79, 9, 9);
+      ctx.fillStyle = NN.token('--ink2', '#333');
+      ctx.fillText(items[j][1], lx + 14, 84);
+      lx += 14 + ctx.measureText(items[j][1]).width + 14;
+    }
+  }
+
+  sweep.addEventListener('input', function(){
+    out.textContent = lrText(lrValue());
+    drawRuler();
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(function(){ start(0); }, 160);
+  });
+  runBtn.addEventListener('click', function(){ start(0); });
+  if (window.Theme) window.Theme.on(function(){ drawRuler(); });
+
+  var ticker = NN.createTicker(root, function(){
+    if (!running) return;
+    for (var i = 0; i < 10 && steps < TARGET; i++) runStep();
+    if (steps >= TARGET) running = false;
+    paint();
+  });
+  ticker.start();
+  out.textContent = lrText(lrValue());
+  start(TARGET);
+});
+</script>

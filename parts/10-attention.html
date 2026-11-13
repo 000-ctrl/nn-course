@@ -1,0 +1,654 @@
+<section class="ch" id="ch-10-attention" data-num="10" data-title="注意力与 Transformer">
+  <header class="ch-head">
+    <div class="ch-eyebrow"><span class="dot"></span>第 10 章 · 序列</div>
+    <h1 class="ch-title">注意力与 Transformer</h1>
+    <p class="ch-sub">让每个词自己决定该回头看哪些词,再把它们的信息加权混合。</p>
+    <div class="ch-rule"></div>
+  </header>
+
+  <div class="prereq"><b>读前</b><span>第 9 章的循环网络、隐藏状态与 9.6「注意力为什么赢了」;softmax 与交叉熵见第 6.2 节;矩阵乘法与转置见第 2 章;反向传播见第 5 章。</span><b>可跳过</b><span>10.7 的 PyTorch 代码块、10.4 的正弦公式细节和 10.3 的参数量手算可跳过,不影响 10.1—10.6 的主线</span></div>
+
+  <p class="lead">第 9 章的循环网络把全部历史压进一个固定长度的隐藏状态,常见是 512 维。序列一长,第 800 个 token(词元)仍要背着第 1 个 token 的信息,这条链既慢又容易断。注意力(attention)换了个办法:不压缩历史,把每个 token 的向量原样保留,当前 token 按需回去查。Transformer 就是把这种查表动作堆叠 12 到 96 层。</p>
+  <p>先把第 9 章的循环网络(recurrent neural network, RNN)捡回来。它在每个时间步读入当前输入 <var>x</var><sub>t</sub> 和上一步的隐藏状态 <var>h</var><sub>t−1</sub>,用同一组权重算出 <var>h</var><sub>t</sub> = tanh(<code>W</code><sub>x</sub><var>x</var><sub>t</sub> + <code>W</code><sub>h</sub><var>h</var><sub>t−1</sub> + <var>b</var>)。这一步把「看到过的所有东西」压进一个固定长度的向量,常见是 512 维;序列走到第 800 个 token 时,第 1 个 token 的信息必须一路挤过这 800 次压缩,每挤一次都会损失一点,长距离依赖(long-range dependency)的信号就这样衰减下去。注意力要解决的就是这件事:不再强迫历史挤进一个向量,而是把每个位置的向量原样留着,需要时直接回去取。</p>
+
+  <h3><span class="h3-n">10.1</span>一次软查表</h3>
+  <p>先想词典。你拿着一个词去查,键完全相等才命中,这是硬查表。注意力是软查表:拿一个查询,和每一个键算相似度,把相似度变成 0 到 1 的权重,再按权重把所有值混合起来。没有相等与不相等,只有权重高低。这个过程叫自注意力(self-attention),因为查询、键、值都来自同一句话。</p>
+  <p>看两句话。第一句是「小狗追着球跑,它很开心」,第二句是「小狗追着球跑,它滚进了草丛」。两个「它」字形一样,第一句指向小狗,第二句指向球。模型靠什么决定?靠上下文算出的查询向量。同一个词在不同上下文里,查询不同,匹配到的键也不同。</p>
+  <p>每个 token 的输入向量 <var>x</var>(例如 512 维)会乘上三个不同的学习矩阵,得到三个向量:</p>
+  <div class="grid-3">
+    <div class="card"><div class="card-h">查询 query</div><p>我现在想找什么。由当前位置的向量算出,相当于检索时输入的关键词。</p></div>
+    <div class="card"><div class="card-h">键 key</div><p>每个位置对外张贴的标签。它决定「我这儿有什么信息,值不值得被查」。</p></div>
+    <div class="card"><div class="card-h">值 value</div><p>匹配成功后真正交给对方的内容。权重乘的是它,不是键本身。</p></div>
+  </div>
+  <p>三个矩阵 <code>W_Q</code>、<code>W_K</code>、<code>W_V</code> 都是训练出来的,没有人手写「代词指向前面最近的名词」这条规则。梯度下降只负责让下一 token 的预测更准,指向关系是它自己学到的副产品。第 1 层的查询只来自词嵌入和位置,还分不清两个「它」;经过几层,每个位置的向量已经混入了前文,后面的层才有能力稳定指向正确的名词。</p>
+
+  <h3><span class="h3-n">10.2</span>点积、softmax 与因果掩码</h3>
+  <p>查询和键的相似度用点积(dot product)算:<code>q·k = q₁k₁ + q₂k₂ + … + q₆₄k₆₄</code>。两个向量方向越一致,点积越大;正交时接近 0;方向相反时为负。把所有查询排成矩阵 <var>Q</var>,所有键排成 <var>K</var>,一次矩阵乘法 <code>QKᵀ</code> 就得到每个查询对每个键的分数,形状是 token 数乘 token 数。</p>
+  <p>具体算一遍。假设某个查询对三个键的原始分数是 2.0、0.5、-1.0。先取指数:<code>e² = 7.389</code>、<code>e⁰·⁵ = 1.649</code>、<code>e⁻¹ = 0.368</code>,和为 9.406。归一化后得到 0.786、0.175、0.039,三个数相加正好为 1。原始分数只差 3.0,取指数后最大和最小差了 20 倍,softmax 会把这种差距进一步放大。</p>
+  <p>公式里的 <code>√d_k</code>(d_k 是键向量的维度,key dimension)不是装饰。假设 <code>d_k = 64</code>,查询和键的每个分量独立、均值接近 0、方差(数据散布的宽度,variance)约为 1,点积的方差约为 64,标准差(方差的平方根,standard deviation)就是 8,分数常在正负 20 之间摆动。直接送进 softmax,最大的那个会接近 1,其余接近 0,梯度几乎消失。除以 <code>√64 = 8</code> 把标准差拉回 1 附近,softmax 才不会一上来就饱和。</p>
+  <div class="math">Attention(<var>Q</var>,<var>K</var>,<var>V</var>) = softmax(<var>QK</var><sup>T</sup> / √<var>d</var><sub>k</sub>) <var>V</var></div>
+  <p class="math-note">读法:先用 Q 和 K 算出每个位置该看谁,softmax 把每一行变成概率,再乘以 V 得到输出。每一行的权重和为 1,输出是同一行所有 value 的加权平均。</p>
+  <p>解码器还要加因果掩码(causal mask)。位置 5 只能看位置 0 到 5,位置 6 及以后的分数在 softmax 之前被改成负无穷,softmax 之后精确为 0。训练时仍然可以一次算完整个矩阵,因为每个位置看到的上三角已经被挖掉,不会偷看答案。这也是 Transformer 比循环网络快的关键:训练时整句并行,不用等第 5 个 token 算完再算第 6 个。</p>
+  <p>代价是平方级的计算量。序列长度 <code>n = 1024</code> 时,单层单头要算 <code>1024 × 1024 = 1,048,576</code> 个分数;12 层、12 头就是 <code>1,048,576 × 12 × 12 = 150,994,944</code> 个,约 1.51 亿个。序列翻倍,这个数字变成四倍。</p>
+
+  <div class="quiz" data-id="q-10-1">
+    <p class="q">点积之后为什么要除以 √d_k?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="把每个向量归一化成长度 1 是另一件事,通常叫 L2 归一化;这里除的是一个标量 √d_k,不改变 Q、K 的方向,也不改变参数量。">为了让 Q 和 K 的每个向量长度变成 1</button>
+      <button class="opt" data-k="B" data-ok data-why="d_k 越大,点积的方差越大,softmax 越容易变成接近 one-hot 的分布,梯度趋近于 0。除以 √d_k 把分数的尺度拉回可控范围。">为了控制点积的数值尺度,避免 softmax 过早饱和</button>
+      <button class="opt" data-k="C" data-why="余弦相似度要除以两个向量的模长 ‖q‖‖k‖,而 √d_k 只和维度有关,和具体向量无关;两者不是一回事。">为了把点积转换成余弦相似度</button>
+      <button class="opt" data-k="D" data-why="这个除法不产生也不删除任何参数。注意力层的参数量由 W_Q、W_K、W_V、W_O 的尺寸决定,与是否缩放无关。">为了减少注意力层的参数量</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <div class="demo" id="d-10-attention">
+    <div class="demo-bar"><span class="live">交互</span><span>注意力热力图:代词到底看谁</span><span class="sp"></span><span class="tag">点格子</span></div>
+    <div class="demo-body">
+      <div class="controls">
+        <div class="seg" id="sg-10-sent">
+          <button data-i="0" aria-pressed="true">小狗跑,它开心</button>
+          <button data-i="1" aria-pressed="false">小狗跑,它滚进草丛</button>
+          <button data-i="2" aria-pressed="false">苹果放三天,它…</button>
+        </div>
+      </div>
+      <div class="canvas-wrap"><canvas id="cv-10-attn" height="360"></canvas></div>
+      <div class="grid-2">
+        <div class="card"><div class="card-h">选中的格子</div><p id="tx-10-cell">正在计算。</p></div>
+        <div class="card"><div class="card-h">这一行最重的三个键</div><div class="canvas-wrap"><canvas id="cv-10-top" height="150"></canvas></div></div>
+      </div>
+    </div>
+    <div class="demo-hint">行是查询(query),列是键(key)。点任意格子,看这两个 token 的权重和解释;切换句子,看同一个「它」如何改主意。矩阵按语义手工构造,用来展示注意力的形状,不是训练出来的权重。</div>
+  </div>
+
+  <h3><span class="h3-n">10.3</span>多头:几种看法同时进行</h3>
+  <p>一个头只能输出一种混合。语言里同时存在多种关系:相邻词、主谓、动宾、指代、标点收束。多头注意力(multi-head attention)让模型并行学几套 Q/K/V,每套关注不同的关系。以 <code>d_model = 512</code>、8 个头为例,每个头分到 <code>d_k = d_v = 64</code> 维。8 个 64 维的输出拼回 512 维,再乘一个 <code>W_O</code> 做混合。</p>
+  <p>参数量算一下。Q、K、V、O 四个 512×512 矩阵,加偏置:<code>4 × (512×512 + 512) = 1,050,624</code>。多头不是把计算量乘 8,而是把 512 维切成 8 份,每份 64 维;总矩阵乘法和一个 512 维单头基本相同。切分让不同子空间独立,不是让模型变宽 8 倍。</p>
+  <div class="stat-row">
+    <div class="stat"><b>512</b><span>d_model,每个 token 的向量宽度</span></div>
+    <div class="stat"><b>8</b><span>注意力头数</span></div>
+    <div class="stat"><b>64</b><span>每个头的 d_k</span></div>
+    <div class="stat"><b>1,050,624</b><span>一层注意力的参数量</span></div>
+  </div>
+  <p>头之间确实会分工,但不保证整齐。探测研究里常见到:有的头盯前一个 token,有的头连接主谓,有的头几乎不做事。把一部分头剪掉,某些模型的精度只掉不到 1 个百分点;剩下的头会补位。这说明「每个头专门负责一种语法」是过度整齐的想象,更准确的说法是「多个头提供了多种可用的混合方式,训练会挑有用的用」。</p>
+  <div class="callout warn"><b>常见误解:注意力权重就是解释</b><p>看到某个头把 0.9 的权重给了「小猫」,不等于「小猫」贡献了 90% 的输出。第一,权重乘的是 V,而 V 还要经过 W_O 与其他头混合;第二,不同头可能重复表达同一件事;第三,残差连接和前馈网络也在搬运信息。注意力权重只说明「这个头从哪儿取了多少」,不说明「最终输出为什么是这样」。要谈解释,至少要看多层多头的平均、梯度归因或消融实验。</p></div>
+
+  <h3><span class="h3-n">10.4</span>位置编码:给没有顺序感的模型一个顺序</h3>
+  <p>把一句话的词打乱,自注意力的输出只是跟着打乱,内容不会变,因为 QK 只比较内容,不知道谁在前。没有掩码的编码器里,「狗咬人」和「人咬狗」得到的是同一组向量,只是顺序不同。因果掩码规定了谁能看谁,却仍然没告诉模型两个位置相隔几个 token。</p>
+  <p>位置编码(positional encoding)解决这件事:给每个位置算一个向量,直接加到词向量上。原版 Transformer 用固定正弦函数:</p>
+  <div class="math">PE(<var>pos</var>, <var>j</var>) = sin(<var>pos</var> / 10000<sup><var>j</var>/<var>d</var></sup>)(<var>j</var> 为偶数) &nbsp;&nbsp; PE(<var>pos</var>, <var>j</var>) = cos(<var>pos</var> / 10000<sup><var>j</var>/<var>d</var></sup>)(<var>j</var> 为奇数)</div>
+  <p class="math-note">pos 是位置编号,<var>j</var> 是维度编号(直接就是维度下标,不是维度对的编号),d 是向量宽度。偶数维用 sin,奇数维用 cos,同一个位置的不同维度使用不同频率。</p>
+  <p>频率按几何级数排列。<code>d = 512</code> 时,第 0 维的波长是 <code>2π ≈ 6.28</code> 个位置,每 6 个多 token 转一圈;第 510 维的波长约 <code>6.05 万</code> 个位置,几乎是一条缓慢的斜线。低维负责细粒度位置,高维负责粗粒度位置,拼起来像一套连续的二进制计数。位置向量直接相加,不是拼接,因为两者量级相近,加法不会把语义盖掉。</p>
+  <p>后来出现三种常见变体。GPT-2 用可学习的绝对位置嵌入,一张 <code>1024×768</code> 的表,共 786,432 个参数;原版 Transformer 用固定正弦;Llama 用旋转位置编码(rotary position embedding, RoPE),把 q、k 按位置旋转一个角度,点积只依赖相对距离。三者都在回答同一个问题:让「相隔几个」进入模型。</p>
+
+  <div class="demo" id="d-10-pos">
+    <div class="demo-bar"><span class="live">交互</span><span>位置编码的波形</span><span class="sp"></span><span class="tag">拖动位置</span></div>
+    <div class="demo-body">
+      <div class="canvas-wrap"><canvas id="cv-10-pos" height="280"></canvas></div>
+      <div class="controls">
+        <div class="ctl"><label for="s-10-p">位置 pos <output id="o-10-p">20</output></label><input id="s-10-p" type="range" min="0" max="63" step="1" value="20"></div>
+      </div>
+      <p id="tx-10-pos">正在计算。</p>
+    </div>
+    <div class="demo-hint">四条曲线是 d=512 时第 0、4、16、64 维的正弦值。竖线跟着滑块移动;同一位置在不同维度上取值不同,维度越高,曲线越平缓。</div>
+  </div>
+
+  <h3><span class="h3-n">10.5</span>一个 block:残差、LayerNorm、前馈</h3>
+  <p>注意力对 V 做的是加权和:权重由输入非线性地决定,但每一层的输出本身仍是本层 value 的线性组合。如果只有注意力,层与层之间又没有逐元素的非线性,整个堆叠仍然只是把 value 线性组合起来——权重会嵌套、随输入变化,但它依然缺少「逐个元素先判断再变换」的能力。Transformer block 在注意力后面加一个前馈网络(feed-forward network, FFN),再给两个子层都套上残差连接(residual connection)和层归一化(layer normalization)。</p>
+  <div class="math">x = x + Attention(LN(x))<br>x = x + FFN(LN(x))</div>
+  <p class="math-note">这是 Pre-LN 写法:先归一化,再进子层,最后把子层的输出加回原向量。原版论文用 Post-LN,把 LN 放在相加之后;Pre-LN 在深模型里更稳,现代大模型多用它。</p>
+  <p>层归一化在一个 token 的 512 个特征上算,不是在一个 batch 的同一特征上算。举例:某个 token 的四维向量是 <code>[1, 2, 3, 4]</code>,均值 2.5,标准差 1.118,归一化后是 <code>[-1.342, -0.447, 0.447, 1.342]</code>,再乘可学习的 γ(缩放,gamma)、加 β(平移,beta)。因为统计量按 token 自己算,batch 大小为 1 也能用,这一点和批归一化(batch normalization)不同。</p>
+  <p>前馈网络是两层全连接:<code>512 → 2048 → 512</code>,中间用 GELU 激活。参数量 <code>512×2048 + 2048 + 2048×512 + 512 = 2,099,712</code>。它逐 token 独立计算,不交换位置之间的信息;信息交换只发生在注意力里。一个 block 的总参数约为 <code>1,050,624 + 2,099,712 + 2×1,024 = 3,152,384</code>,约 315 万。</p>
+  <p>残差连接是深度的关键。<code>x + f(x)</code> 给梯度留了一条恒等通道,反向传播时梯度可以直接流过加法,不必穿过每一层的雅可比矩阵。没有残差,96 层的 Transformer 很难训练;有了残差,层数从 6 加到 96 是工程问题,不是原理问题。GPT-2 small 的 <code>d_model = 768</code>、12 层、12 头,每层约 708 万参数,加上 <code>50,257×768 = 38,597,376</code> 的词嵌入和 786,432 个位置参数,总参数 1.24 亿。</p>
+
+  <div class="quiz" data-id="q-10-2">
+    <p class="q">解码器训练时,为什么要把未来位置的分数 mask 掉?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="mask 不改变模型容量,也不提供正则化。它改变的是每个位置能看到的信息,防止训练时偷看答案,和过拟合没有直接关系。">为了防止模型过拟合训练数据</button>
+      <button class="opt" data-k="B" data-ok data-why="训练时整句都在,如果不遮住未来,位置 5 会直接看到位置 6 的答案,学到的映射在推理时用不了。mask 让训练和推理的信息条件一致:每个位置只能依赖前缀。">为了让训练时的信息条件和推理时一致,不能偷看后面的答案</button>
+      <button class="opt" data-k="C" data-why="训练语料的未来 token 是完整存在的,不需要等生成;mask 是主动遮住已知答案,不是数据还没准备好。">因为训练时未来的 token 还没有被 tokenizer 生成</button>
+      <button class="opt" data-k="D" data-why="mask 之后仍然要算完整的 n×n 分数矩阵,只是把上三角置为负无穷;它不节省显存,反而保留了被 mask 的位置。">为了减少注意力矩阵的显存占用</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">10.6</span>tokenizer 与自回归生成</h3>
+  <p>模型不读汉字,只读整数。分词器(tokenizer)把文本切成 token(词元),再给每个 token 一个整数 ID。为什么非要做这一步?因为模型的第一层是一张嵌入(embedding)表,表按整数下标取行,没有下标就取不出向量。GPT-2 的词表(vocabulary)有 50,257 个 token,一个中文字常被切成 1 到 3 个 token;具体怎么切、字节对编码(byte pair encoding,BPE)如何合并片段,第 12 章 12.3 会讲,这里只要记住:文字先变成整数,整数再去查表。</p>
+  <p>输入的 ID 去查一张 <code>50,257×768</code> 的嵌入(embedding)表,得到 768 维向量;加上位置编码;送进 12 层 block;最后乘输出矩阵,得到 50,257 个未归一化的分数(logits)。softmax 之后,就是下一个 token 的概率分布。</p>
+  <p>自回归(autoregressive)的意思是:每次根据已经生成的前缀预测下一个 token,把它接回输入,再预测下一个。训练时答案已知,可以把整句右移(整体后挪一格,shift right)一位,一次前向同时算所有位置的损失,这叫教师强制(teacher forcing);推理时没有答案,只能一个一个来。生成 500 个 token 要跑 500 次前向。键值缓存(KV cache)把每层已经算过的 K、V 存下来,新 token 只算自己的 q、k、v,再和缓存拼接。代价是显存:1024 个 token、12 层、12 头、每头 64 维,单条样本的 K 缓存约 18 MB(FP16),V 再加一倍。</p>
+  <h4>温度与采样(简述)</h4>
+  <p>模型输出的是 50,257 个未归一化的分数(logits),要变成一个词,先 softmax 成概率,再从分布里挑。贪心解码(greedy decoding)每次取概率最高的一个,输出稳定但容易重复;按概率随机抽则每次不同。温度(temperature)是插在 softmax 里的一个标量:</p>
+  <div class="math"><var>p</var><sub>i</sub>(<var>T</var>) = exp(<var>z</var><sub>i</sub>/<var>T</var>) / Σ<sub>j</sub> exp(<var>z</var><sub>j</sub>/<var>T</var>)</div>
+  <p class="math-note">Σ 是求和,把各项加起来(sum);z 是 logits,T 是温度。T 小于 1 时分布变尖,高概率的词更容易被选中;T 大于 1 时分布变平,低概率词也有机会;T 趋近 0 时退化为贪心;T 趋近无穷时变成均匀分布。T 不改变模型参数,只改变从 logits 到概率的变换。</p>
+  <p>用「今天天气真」后面的一组概率(好 42%、不错 23%、热 13%、冷 9%、糟 7%、一般 6%)算一下:<code>T = 0.5</code> 时「好」升到约 67.1%;<code>T = 2</code> 时降到约 28.2%,六个词都变得可能。除了温度,还有 top-k(只留概率最高的 k 个)和 top-p(核采样,nucleus sampling,留累计概率到 p 的最小集合,常用 p = 0.9)。这三个参数只改推理时的取词方式,不改模型权重;第 14 章 14.5 会把它们放回推理服务的完整流程里。</p>
+
+  <div class="demo" id="d-10-temp">
+    <div class="demo-bar"><span class="live">交互</span><span>温度如何改变下一个词</span><span class="sp"></span><span class="tag">拖动温度</span></div>
+    <div class="demo-body">
+      <div class="canvas-wrap"><canvas id="cv-10-temp" height="230"></canvas></div>
+      <div class="controls">
+        <div class="ctl"><label for="s-10-t">温度 T <output id="o-10-t">0.8</output></label><input id="s-10-t" type="range" min="0" max="2" step="0.1" value="0.8"></div>
+        <button class="btn primary" id="b-10-draw">再抽一个</button>
+        <button class="btn" id="b-10-reset">重置到 0.8</button>
+      </div>
+      <p id="tx-10-stat">正在计算。</p>
+      <div class="card"><div class="card-h">最近采样</div><p id="tx-10-samples">正在计算。</p></div>
+    </div>
+    <div class="demo-hint">初始概率来自「今天天气真」后面的一组 logits。把 T 拖到 0,分布变成 one-hot,每次都是同一个词;把 T 拖到 2,六个词都会出现。点「再抽一个」追加一次采样。</div>
+  </div>
+
+  <div class="quiz" data-id="q-10-3">
+    <p class="q">把温度从 0.8 调到 2.0,会发生什么?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="logits 要除以温度,不能把概率直接乘 2。而且乘 2 之后总和不再是 1,必须重新归一化,效果也不是简单地放大最高项。">每个词的概率都乘以 2,最高项仍然最大</button>
+      <button class="opt" data-k="B" data-ok data-why="T 在分母上变大,logits 的差距被压缩,softmax 后的分布更平,低概率词获得更多机会,输出更多样。T=0 才是贪心,方向正好相反。">分布被抹平,低概率词更容易被抽到,输出更多样</button>
+      <button class="opt" data-k="C" data-why="温度只作用于推理时的 logits 变换,不参与梯度更新,模型权重一个都不会变。改变的只是从同一组 logits 得到概率的方式。">模型会重新训练,权重被更新成更随机的版本</button>
+      <button class="opt" data-k="D" data-why="T=2 时最高概率从约 49% 降到约 28%,不是变大。温度升高让分布更接近均匀,最高项只会更不突出。">最高概率会变大,模型变得更自信</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">10.7</span>自己写一遍注意力</h3>
+  <p>下面的 PyTorch 代码把上面所有公式落成 40 行。先看形状:<code>q</code>、<code>k</code>、<code>v</code> 的形状都是 <code>[batch, heads, seq, d_k]</code>;<code>scores</code> 是 <code>[batch, heads, seq, seq]</code>;<code>mask</code> 用 1 表示可见、0 表示遮住。运行前把 <code>d</code> 设成 64、头数设成 4、序列长度设成 16,一次前向在 CPU 上不到 1 毫秒。</p>
+  <div class="code-wrap"><div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div><pre class="code"><code>import math
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+def attention(q, k, v, mask=None):
+    # q, k, v: [batch, heads, seq, d_k]
+    d_k = q.size(-1)
+    scores = q @ k.transpose(-2, -1) / math.sqrt(d_k)
+    if mask is not None:
+        scores = scores.masked_fill(mask == 0, -1e9)
+    w = F.softmax(scores, dim=-1)
+    return w @ v, w
+
+class Block(nn.Module):
+    def __init__(self, d=512, h=8):
+        super().__init__()
+        self.h = h
+        self.ln1 = nn.LayerNorm(d)
+        self.qkv = nn.Linear(d, 3 * d)
+        self.out = nn.Linear(d, d)
+        self.ln2 = nn.LayerNorm(d)
+        self.ff = nn.Sequential(
+            nn.Linear(d, 4 * d), nn.GELU(), nn.Linear(4 * d, d))
+
+    def forward(self, x, mask=None):
+        B, n, d = x.shape
+        q, k, v = self.qkv(self.ln1(x)).chunk(3, dim=-1)
+        q, k, v = [t.view(B, n, self.h, d // self.h).transpose(1, 2)
+                   for t in (q, k, v)]
+        a, _ = attention(q, k, v, mask)
+        a = a.transpose(1, 2).reshape(B, n, d)
+        x = x + self.out(a)
+        x = x + self.ff(self.ln2(x))
+        return x</code></pre></div>
+  <p>这段代码里没有循环网络的时间步,也没有卷积。序列维度 <code>n</code> 只出现在矩阵乘法里,所以同一个 batch 的所有位置能一起算。真正的 GPT 只是把 <code>Block</code> 堆 12 到 96 次,前面加 tokenizer,后面加采样循环;核心就是这几十行。这里的 12 到 96 层说的是一代到三代的稠密(dense)模型:GPT-1 是 12 层、GPT-3 是 96 层,每个 token 都要过全部参数。现代大模型还会叠加混合专家(mixture of experts, MoE):每层放几十个专家,每个 token 只激活其中一两个,总参数量能到几千亿,单次计算却只按激活的那一小部分算。第 14 章会讲 MoE 怎么接进 Block。</p>
+  <div class="callout key"><b>一句话记住 Transformer</b><p>每个 token 带着自己的查询,去所有 token 的键里找匹配,按匹配度混合它们的信息;顺序靠位置编码,深度靠残差,稳定靠 LayerNorm,非线性靠前馈网络。缺了前馈和残差,它只是一个会看上下文的加权平均器。</p></div>
+  <div class="callout tip"><b>训练与推理别混用温度</b><p>训练时用教师强制和交叉熵,温度通常不参与;推理时才用温度、top-k、top-p 调风格。评估模型能力时用贪心或 T=1,不要把高温采样的随机性当成模型变聪明或变笨。</p></div>
+
+  <div class="ch-foot">
+    <span class="state" data-state></span>
+    <span class="sp"></span>
+    <a class="btn" href="#ch-11-generative">下一章 →</a>
+  </div>
+</section>
+
+<script>
+defineDemo('d-10-attention', function(root){
+  if(!window.NN){
+    setTimeout(function(){ window.DEMOS['d-10-attention'](root); }, 0);
+    return;
+  }
+  if(root.__inited) return;
+  root.__inited = true;
+  var DATA = [
+    {
+      tokens: ['小狗','追','着','球','跑','它','很','开心','。'],
+      rules: [
+        [5,0,2.4,'「它」的查询和「小狗」的键最匹配:跑在前面的是小狗,后面「开心」的主语也是它。'],
+        [7,5,1.2,'「开心」要判断谁开心,把注意力放回代词「它」。'],
+        [3,1,1.0,'「球」是「追」的对象,动词和宾语互相看得重。'],
+        [4,1,0.8,'「跑」承接「追」,动作链上的相邻动词。'],
+        [8,7,0.5,'句号汇总前面一小句的信息。']
+      ],
+      sel: [5,0]
+    },
+    {
+      tokens: ['小狗','追','着','球','跑','它','滚','进','草丛','。'],
+      rules: [
+        [5,3,2.4,'同一句里「它」指向「球」:后面的动词是「滚」,会滚的是球,不是小狗。'],
+        [6,5,1.2,'「滚」的主语是「它」,注意力先回到代词。'],
+        [6,3,0.8,'「滚」和「球」共享同一个论元,远距离也要连起来。'],
+        [7,3,0.7,'「进草丛」的主语仍是球。'],
+        [3,1,1.0,'「球」是「追」的对象。'],
+        [9,8,0.5,'句号收束整个小句。']
+      ],
+      sel: [5,3]
+    },
+    {
+      tokens: ['苹果','不','好吃','因为','它','放','了','三天','。'],
+      rules: [
+        [4,0,2.2,'「它」指「苹果」:被放了三天的是苹果,不是「好吃」。'],
+        [5,4,1.0,'「放」的主语是「它」。'],
+        [2,0,0.8,'「好吃」评价的对象是「苹果」。'],
+        [7,5,0.9,'「三天」说明「放」了多久。'],
+        [3,4,0.6,'「因为」把原因从句的注意力引向「它」。'],
+        [8,7,0.4,'句号收束原因从句。']
+      ],
+      sel: [4,0]
+    }
+  ];
+
+  var cv = root.querySelector('#cv-10-attn');
+  var topCv = root.querySelector('#cv-10-top');
+  var tx = root.querySelector('#tx-10-cell');
+  var seg = root.querySelector('#sg-10-sent');
+  var state = { i: 0, m: null, sel: { r: 0, c: 0 }, geom: null };
+
+  function build(d){
+    var n = d.tokens.length, m = [];
+    for(var r = 0; r < n; r++){
+      var row = [];
+      for(var c = 0; c < n; c++){
+        var v = 0;
+        if(r === c) v += 0.8;
+        if(Math.abs(r - c) === 1) v += 0.35;
+        row.push(v);
+      }
+      m.push(row);
+    }
+    d.rules.forEach(function(x){ m[x[0]][x[1]] += x[2]; });
+    m.forEach(function(row){
+      var s = 0;
+      row.forEach(function(v){ s += v; });
+      for(var j = 0; j < row.length; j++) row[j] /= s;
+    });
+    return m;
+  }
+
+  function draw(){
+    var d = DATA[state.i], m = state.m, n = d.tokens.length;
+    var first = NN.fitCanvas(cv, 300);
+    var w = first.w;
+    var LAB = 58, TOP = 52, GAP = 2;
+    var cell = Math.floor(Math.min(36, (w - LAB - 10 - GAP * n) / n));
+    if(cell < 12) cell = 12;
+    var H = TOP + n * (cell + GAP) + 8;
+    var fit = NN.fitCanvas(cv, H);
+    var ctx = fit.ctx; w = fit.w;
+    ctx.clearRect(0, 0, w, H);
+
+    var lo = NN.token('--seq-lo', '#EAF2FC');
+    var hi = NN.token('--seq-hi', '#0d366b');
+    var accent = NN.token('--accent', '#1F4FD1');
+    var ink = NN.token('--ink', '#0E1A28');
+    var muted = NN.token('--muted', '#68798C');
+    var max = 0;
+    m.forEach(function(row){ row.forEach(function(v){ if(v > max) max = v; }); });
+
+    for(var r = 0; r < n; r++){
+      for(var c = 0; c < n; c++){
+        var v = m[r][c];
+        var t = NN.clamp(v / (max || 1), 0, 1);
+        var x = LAB + c * (cell + GAP);
+        var y = TOP + r * (cell + GAP);
+        ctx.fillStyle = NN.rgba(NN.mix(lo, hi, t), 1);
+        ctx.fillRect(x, y, cell, cell);
+        if(cell >= 30){
+          ctx.fillStyle = t > 0.55 ? NN.token('--surface', '#fff') : ink;
+          ctx.font = '9px "JetBrains Mono", monospace';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText((v * 100).toFixed(0), x + cell / 2, y + cell / 2);
+        }
+      }
+    }
+
+    var sr = state.sel.r, sc = state.sel.c;
+    ctx.fillStyle = NN.rgba(NN.hexToRgb(accent), 0.13);
+    ctx.fillRect(LAB, TOP + sr * (cell + GAP), n * (cell + GAP), cell);
+    ctx.fillRect(LAB + sc * (cell + GAP), TOP, cell, n * (cell + GAP));
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(LAB + sc * (cell + GAP) + 1, TOP + sr * (cell + GAP) + 1, cell - 2, cell - 2);
+
+    var fsz = cell < 26 ? 8 : 9.5;
+    ctx.textBaseline = 'middle';
+    for(var c2 = 0; c2 < n; c2++){
+      ctx.fillStyle = c2 === sc ? accent : muted;
+      ctx.font = (c2 === sc ? '600 ' : '') + fsz + 'px "Noto Sans SC", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(d.tokens[c2], LAB + c2 * (cell + GAP) + cell / 2, TOP - 9);
+    }
+    for(var r2 = 0; r2 < n; r2++){
+      ctx.fillStyle = r2 === sr ? accent : muted;
+      ctx.font = (r2 === sr ? '600 ' : '') + fsz + 'px "Noto Sans SC", sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText(d.tokens[r2], LAB - 6, TOP + r2 * (cell + GAP) + cell / 2);
+    }
+    ctx.fillStyle = muted;
+    ctx.font = '9px "JetBrains Mono", monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('查询 ↓', 4, 13);
+    ctx.fillText('键 →', 4, 25);
+
+    state.geom = { w: w, h: H, labelW: LAB, topH: TOP, cell: cell, gap: GAP, n: n };
+  }
+
+  function updateText(){
+    var d = DATA[state.i];
+    var r = state.sel.r, c = state.sel.c;
+    var w = state.m[r][c] * 100;
+    var rule = null;
+    d.rules.forEach(function(x){ if(x[0] === r && x[1] === c) rule = x; });
+    var msg;
+    if(rule){
+      msg = rule[3];
+    } else if(r === c){
+      msg = '「' + d.tokens[r] + '」把一部分注意力留给自己,保留自身信息;自注意力不要求每个位置只看别人。';
+    } else if(Math.abs(r - c) === 1){
+      msg = '相邻位置拿到基础权重;有些头专门学这种局部关系,它和长距离指代互补。';
+    } else if(w < 0.5){
+      msg = '这一对没有专门设计的关系,基础分是 0,归一化后权重接近 0;真实模型的 softmax 很少给出精确的 0,会给所有位置留一点概率。';
+    } else {
+      msg = '这一对没有专门设计的关系,只有默认分配带来的少量权重。';
+    }
+    tx.textContent = '查询「' + d.tokens[r] + '」对键「' + d.tokens[c] + '」的权重是 ' + w.toFixed(1) + '%。' + msg;
+  }
+
+  function updateTop(){
+    var d = DATA[state.i];
+    var row = state.m[state.sel.r];
+    var idx = row.map(function(v, i){ return { v: v, i: i }; })
+                 .sort(function(a, b){ return b.v - a.v; })
+                 .slice(0, 3);
+    var mx = idx[0] ? idx[0].v : 1;
+    NN.barChart(topCv, idx.map(function(o, k){
+      return { label: d.tokens[o.i], value: o.v, color: k === 0 ? '--c2' : '--c1', text: (o.v * 100).toFixed(1) + '%' };
+    }), { max: mx || 1, height: 150 });
+  }
+
+  function refresh(){
+    draw();
+    updateText();
+    updateTop();
+  }
+
+  cv.addEventListener('click', function(ev){
+    var g = state.geom;
+    if(!g) return;
+    var rect = cv.getBoundingClientRect();
+    var x = (ev.clientX - rect.left) * (g.w / rect.width);
+    var y = (ev.clientY - rect.top) * (g.h / rect.height);
+    if(x < g.labelW || y < g.topH) return;
+    var c = Math.floor((x - g.labelW) / (g.cell + g.gap));
+    var r = Math.floor((y - g.topH) / (g.cell + g.gap));
+    if(r < 0 || r >= g.n || c < 0 || c >= g.n) return;
+    var dx = (x - g.labelW) % (g.cell + g.gap);
+    var dy = (y - g.topH) % (g.cell + g.gap);
+    if(dx > g.cell || dy > g.cell) return;
+    state.sel = { r: r, c: c };
+    refresh();
+  });
+
+  var btns = Array.prototype.slice.call(seg.querySelectorAll('button'));
+  btns.forEach(function(b){
+    b.addEventListener('click', function(){
+      state.i = parseInt(b.dataset.i, 10);
+      btns.forEach(function(x){ x.setAttribute('aria-pressed', String(x === b)); });
+      state.m = build(DATA[state.i]);
+      state.sel = { r: DATA[state.i].sel[0], c: DATA[state.i].sel[1] };
+      refresh();
+    });
+  });
+
+  state.m = build(DATA[0]);
+  state.sel = { r: DATA[0].sel[0], c: DATA[0].sel[1] };
+  refresh();
+
+  var rt = null;
+  window.addEventListener('resize', function(){
+    clearTimeout(rt);
+    rt = setTimeout(refresh, 120);
+  });
+  if(window.Theme && window.Theme.on){
+    window.Theme.on(refresh);
+  }
+});
+
+defineDemo('d-10-temp', function(root){
+  if(!window.NN){
+    setTimeout(function(){ window.DEMOS['d-10-temp'](root); }, 0);
+    return;
+  }
+  if(root.__inited) return;
+  root.__inited = true;
+  var WORDS = ['好','不错','热','冷','糟','一般'];
+  var BASE = [0.42, 0.23, 0.13, 0.09, 0.07, 0.06];
+  var cv = root.querySelector('#cv-10-temp');
+  var slider = root.querySelector('#s-10-t');
+  var out = root.querySelector('#o-10-t');
+  var stat = root.querySelector('#tx-10-stat');
+  var rec = root.querySelector('#tx-10-samples');
+  var btn = root.querySelector('#b-10-draw');
+  var reset = root.querySelector('#b-10-reset');
+  var T = 0.8, gen = [];
+
+  function probs(t){
+    if(t <= 0.0001){
+      var mx = Math.max.apply(null, BASE);
+      return BASE.map(function(p){ return p === mx ? 1 : 0; });
+    }
+    var z = BASE.map(function(p){ return Math.log(p) / t; });
+    var top = Math.max.apply(null, z);
+    var e = z.map(function(v){ return Math.exp(v - top); });
+    var s = e.reduce(function(a, b){ return a + b; }, 0);
+    return e.map(function(v){ return v / s; });
+  }
+
+  function sample(p){
+    var u = Math.random(), acc = 0;
+    for(var i = 0; i < p.length; i++){
+      acc += p[i];
+      if(u < acc) return i;
+    }
+    return p.length - 1;
+  }
+
+  function entropy(p){
+    var h = 0;
+    p.forEach(function(v){ if(v > 0) h -= v * Math.log(v); });
+    return h;
+  }
+
+  function topIndex(p){
+    var k = 0;
+    for(var i = 1; i < p.length; i++) if(p[i] > p[k]) k = i;
+    return k;
+  }
+
+  function drawBars(p){
+    var top = topIndex(p);
+    NN.barChart(cv, WORDS.map(function(w, i){
+      return { label: w, value: p[i], color: i === top ? '--c2' : '--c1', text: (p[i] * 100).toFixed(1) + '%' };
+    }), { max: 1, height: 230 });
+  }
+
+  function drawSamples(){
+    var txt = gen.map(function(i){ return WORDS[i]; }).join(' / ');
+    rec.textContent = '今天天气真' + (txt ? ' ' + txt : '') + '。';
+  }
+
+  function render(){
+    var p = probs(T);
+    out.textContent = T <= 0.0001 ? '0 贪心' : T.toFixed(1);
+    drawBars(p);
+    var h = entropy(p), eff = Math.exp(h), top = topIndex(p);
+    var note = T <= 0.0001 ? ' T=0 时 argmax 永远选同一个词,采样记录会完全重复。' : '';
+    stat.textContent = '最高的是「' + WORDS[top] + '」,概率 ' + (p[top] * 100).toFixed(1) +
+      '%。分布熵 ' + h.toFixed(2) + ' nat,等效候选 ' + eff.toFixed(1) + ' 个。' + note;
+    gen = [];
+    for(var k = 0; k < 12; k++) gen.push(sample(p));
+    drawSamples();
+  }
+
+  slider.addEventListener('input', function(){
+    T = parseFloat(slider.value);
+    render();
+  });
+
+  btn.addEventListener('click', function(){
+    var p = probs(T);
+    gen.push(sample(p));
+    if(gen.length > 24) gen.shift();
+    drawSamples();
+  });
+
+  reset.addEventListener('click', function(){
+    T = 0.8;
+    slider.value = '0.8';
+    render();
+  });
+
+  render();
+  if(window.Theme && window.Theme.on){
+    window.Theme.on(function(){ drawBars(probs(T)); });
+  }
+});
+
+defineDemo('d-10-pos', function(root){
+  if(!window.NN){
+    setTimeout(function(){ window.DEMOS['d-10-pos'](root); }, 0);
+    return;
+  }
+  if(root.__inited) return;
+  root.__inited = true;
+  var cv = root.querySelector('#cv-10-pos');
+  var slider = root.querySelector('#s-10-p');
+  var out = root.querySelector('#o-10-p');
+  var tx = root.querySelector('#tx-10-pos');
+  var DIMS = [0, 4, 16, 64];
+  var COLORS = ['--c1', '--c2', '--c3', '--c4'];
+  var pos = 20;
+
+  function val(p, i){
+    return Math.sin(p / Math.pow(10000, i / 512));
+  }
+
+  function draw(){
+    var fit = NN.fitCanvas(cv, 280);
+    var ctx = fit.ctx, w = fit.w, h = fit.h;
+    ctx.clearRect(0, 0, w, h);
+    var padL = 42, padR = 16, padT = 34, padB = 30;
+    var x0 = padL, x1 = w - padR, y0 = padT, y1 = h - padB;
+    var ink = NN.token('--ink', '#0E1A28');
+    var muted = NN.token('--muted', '#68798C');
+    var line = NN.token('--line', '#CBD7E3');
+    var accent = NN.token('--accent', '#1F4FD1');
+
+    function X(p){ return x0 + (p / 63) * (x1 - x0); }
+    function Y(v){ return y1 - (v + 1) / 2 * (y1 - y0); }
+
+    ctx.strokeStyle = line;
+    ctx.lineWidth = 1;
+    ctx.fillStyle = muted;
+    ctx.font = '10px "JetBrains Mono", monospace';
+    ctx.textBaseline = 'middle';
+    [-1, 0, 1].forEach(function(v){
+      ctx.beginPath();
+      ctx.moveTo(x0, Y(v));
+      ctx.lineTo(x1, Y(v));
+      ctx.stroke();
+      ctx.textAlign = 'right';
+      ctx.fillText(String(v), x0 - 7, Y(v));
+    });
+    [0, 16, 32, 48, 63].forEach(function(p){
+      ctx.beginPath();
+      ctx.moveTo(X(p), y0);
+      ctx.lineTo(X(p), y1);
+      ctx.stroke();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText(String(p), X(p), y1 + 7);
+    });
+
+    DIMS.forEach(function(dim, k){
+      var col = NN.token(COLORS[k], '#2a78d6');
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      for(var p = 0; p <= 63; p++){
+        var x = X(p), y = Y(val(p, dim));
+        if(p === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      var lx = x0 + k * ((x1 - x0) / 4);
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(lx, 14);
+      ctx.lineTo(lx + 12, 14);
+      ctx.stroke();
+      ctx.fillStyle = muted;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.font = '9px "JetBrains Mono", monospace';
+      ctx.fillText('dim ' + dim, lx + 16, 14);
+    });
+
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(X(pos), y0);
+    ctx.lineTo(X(pos), y1);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    DIMS.forEach(function(dim, k){
+      ctx.fillStyle = NN.token(COLORS[k], '#2a78d6');
+      ctx.beginPath();
+      ctx.arc(X(pos), Y(val(pos, dim)), 3.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = NN.token('--surface', '#fff');
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+    });
+
+    ctx.fillStyle = muted;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.font = '10px "Noto Sans SC", sans-serif';
+    ctx.fillText('位置 pos', (x0 + x1) / 2, h - 12);
+  }
+
+  function updateText(){
+    var vals = DIMS.map(function(dim){ return val(pos, dim); });
+    tx.textContent = 'pos = ' + pos + ':dim 0 = ' + vals[0].toFixed(3) +
+      ',dim 4 = ' + vals[1].toFixed(3) +
+      ',dim 16 = ' + vals[2].toFixed(3) +
+      ',dim 64 = ' + vals[3].toFixed(3) +
+      '。同一个位置在不同维度上取值不同;维度越高,曲线越平缓,负责更粗的位置刻度。';
+  }
+
+  slider.addEventListener('input', function(){
+    pos = parseInt(slider.value, 10);
+    out.textContent = String(pos);
+    draw();
+    updateText();
+  });
+
+  draw();
+  updateText();
+  var rt = null;
+  window.addEventListener('resize', function(){
+    clearTimeout(rt);
+    rt = setTimeout(draw, 120);
+  });
+  if(window.Theme && window.Theme.on){
+    window.Theme.on(draw);
+  }
+});
+</script>

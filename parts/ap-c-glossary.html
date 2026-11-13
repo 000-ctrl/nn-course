@@ -1,0 +1,524 @@
+<section class="ch" id="ch-ap-c" data-num="C" data-title="术语与路线">
+  <header class="ch-head">
+    <div class="ch-eyebrow"><span class="dot"></span>附录 C · 路线</div>
+    <h1 class="ch-title">术语与路线</h1>
+    <p class="ch-sub">50 个术语的可搜索速查表,两条带验收标准的学习路线,以及学完之后真实的能力边界。</p>
+    <div class="ch-rule"></div>
+  </header>
+
+  <div class="prereq"><b>读前</b><span>前 14 章的概念,至少第 03 章的梯度与损失、第 05 章的反向传播、第 06 章的损失/学习率/epoch——C.2 的验收标准与 C.3 的代码直接用到它们。</span><b>可跳过</b><span>C.1 的搜索演示、C.2 的打卡演示、C.3 的整段 PyTorch 代码块可跳过,不影响两条路线的选择。</span></div>
+
+  <p class="lead">这一章不引入新模型。它做两件事:把全书反复出现的 50 个词压成一页可搜索的速查表,再给出两条带验收标准的学习路线。术语按「数据—结构—训练—评估—架构」的顺序排列,不是字母序;路线按「能做出什么」验收,不是按「读了哪几页」。学完前 14 章之后,这一页应该成为你回头查得最频繁的一页。</p>
+
+  <h3><span class="h3-n">C.1</span>一张能搜的术语表</h3>
+  <p>同一个概念在书里通常有三个名字:中文译名、英文原名、数学符号。损失函数(loss function)在公式里写 <code>L</code>,在 PyTorch 里叫 <code>loss_fn</code>;学习率(learning rate)写作 <var>η</var>,在代码里叫 <code>lr</code>;批(batch)在论文里也写成 mini-batch。这三个名字指同一件事,但搜索框一次只能命中其中一种写法。术语卡片把三种写法放在一起,所以输入「交叉熵」「cross」或者「4.605」都能找到它。</p>
+  <p>每条解释只写一句话,重点不是词典义,而是它在网络里具体干什么。例如「偏置」(bias)不是性格上的偏见,而是加权和之后再加的常数,作用是把激活阈值整体平移;「嵌入」(embedding)不是把东西塞进去,而是一张可学习的查表,词表 50,000、维度 768 时这张表有 3,840 万个参数。「卷积」(convolution)也不是数学课上的积分,而是同一组小权重在图像上滑动、在每个位置做一次点积。</p>
+  <p>为什么一定要给英文:框架的报错、论文的图注、模型的配置文件都用英文。你搜「Expected all tensors to be on the same device」,关键词是 tensor,不是「张量」;你读 Transformer 论文,图里写的是 query、key、value,不是「查询、键、值」。记住英文名,等于拿到一把能开三扇门的钥匙。这张表里 50 条术语覆盖了本书从单个神经元到大语言模型的全部关键节点,每条都至少在前面的章节里出现过一次。</p>
+
+  <div class="callout tip"><b>用法:先搜,再背</b><p>术语不要按顺序背。遇到一个词,先搜一次,看它一句话在干什么,再回到上下文。同一个词在不同章节出现三次,你自然会记住;一次背 50 条,三天后通常只剩前 5 条。真正需要背的是三组对照:weight 与 bias、loss 与 metric、epoch 与 batch。</p></div>
+
+  <div class="demo" id="d-ap-c-glossary">
+    <div class="demo-bar"><span class="live">交互</span><span>术语搜索</span><span class="sp"></span><span class="tag">50 条</span></div>
+    <div class="demo-body">
+      <div class="controls">
+        <div class="ctl"><label for="i-ap-c-q">搜索术语 <output id="o-ap-c-count">50 / 50</output></label>
+          <input id="i-ap-c-q" type="search" class="btn" size="18" placeholder="中文、英文或数字,例如 梯度、grad、4.605" autocomplete="off" spellcheck="false">
+        </div>
+      </div>
+      <p id="e-ap-c-empty" hidden>没有匹配的术语。试试更短的关键词,或者只输入英文的前几个字母,例如把 gradient 缩成 grad。</p>
+      <div class="grid-2" id="g-ap-c-terms"></div>
+    </div>
+    <div class="demo-hint">打开时 50 条全部显示。输入「梯」或「grad」,卡片会实时缩小范围,匹配的字用底色标出;右上角的计数从 50 / 50 变成命中的条数。清空输入框恢复全部。</div>
+  </div>
+
+  <div class="quiz" data-id="q-ap-c-1">
+    <p class="q">下面哪一组写法指的是同一个东西?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-ok data-why="对。损失函数在中文里叫损失函数,英文是 loss function,公式里常记作 L;三者是同一概念的不同写法。">损失函数 / loss function / L</button>
+      <button class="opt" data-k="B" data-why="错在把权重和偏置混了。权重是 weight,常记作 w,决定输入的缩放;偏置是 bias,常记作 b,只做平移。两者是两类不同的参数。">权重 / bias / b</button>
+      <button class="opt" data-k="C" data-why="错在学习率和轮次不是一回事。学习率是 learning rate,记作 η,决定每步走多远;epoch 是轮次,指把训练集完整过一遍。两者量纲都不同。">学习率 / epoch / η</button>
+      <button class="opt" data-k="D" data-why="错在 batch 和 logit 没有关系。batch 是一起处理的样本组;logit 是 softmax 之前未归一化的分数。一个是数据组织方式,一个是模型输出。">批 / batch / logit</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">C.2</span>四周版与三个月版</h3>
+  <p>路线不是课程表,是验收清单。每条任务都写成可以判定的结果:不是「理解反向传播(backpropagation)」,而是「手推一个 2→3→1 网络(2 个输入、3 个隐藏、1 个输出)的一轮反向,解析梯度(analytic gradient,按公式直接算出)与数值微分(numerical differentiation,用差分近似)的最大误差小于 1e-6(即 0.000001)」。能判定,才知道自己走到哪;不能判定,「学过了」只是一种感觉。</p>
+  <p>四周冲刺版面向每天能挤出 1.5 到 2 小时的人,总计约 40 到 50 小时,16 个任务。第 1 周只碰一个神经元和线性回归,把损失从 2.4 压到 0.02;第 2 周写完整训练循环,并故意制造一次学习率过大导致的发散;第 3 周进 MNIST 和卷积(convolution),目标测试集 97% 与 15 万参数以内;第 4 周做字符级循环网络(recurrent neural network, RNN)和一个 30 行的推理脚本。终点是:给你一份表格数据或 28×28 的图片,你能独立跑出一个可信的 baseline。</p>
+  <p>三个月系统版面向每周能投入 6 到 8 小时的人,总计约 72 到 96 小时,24 个任务。它把四周版压扁的部分展开:第 1 个月补数学与训练工程,第 2 个月做视觉,第 3 个月做序列、注意力和 mini GPT,最后一周复现一篇小论文的表格。终点不是「学过」,而是「能复现」。</p>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>维度</th><th>四周冲刺版</th><th>三个月系统版</th></tr></thead>
+      <tbody>
+        <tr><td>周期</td><td class="num">28 天</td><td class="num">12 周</td></tr>
+        <tr><td>总投入</td><td class="num">40—50 小时</td><td class="num">72—96 小时</td></tr>
+        <tr><td>验收任务</td><td class="num">16 项</td><td class="num">24 项</td></tr>
+        <tr><td>自己写的代码</td><td class="num">约 600 行</td><td class="num">约 2,000 行</td></tr>
+        <tr><td>终点指标</td><td>MNIST 97%,能改超参数</td><td>CIFAR-10 72%,能复现小论文</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>顺序不能倒。很多人一上来就读 Transformer,结果卡在三件更基础的事上:数据怎么归一化、损失为什么不降、验证集(validation set)为什么比训练集差 20 个百分点。注意力本身只有一行公式,难的是它周围的训练管线。先把一个 101,770 个参数的 MLP 训明白,再去看 1.75 亿参数的模型,你看到的才是结构,不是魔法。</p>
+
+  <div class="demo" id="d-ap-c-route">
+    <div class="demo-bar"><span class="live">交互</span><span>学习路线打卡</span><span class="sp"></span><span class="tag">进度只在内存</span></div>
+    <div class="demo-body">
+      <div class="seg" id="seg-ap-c-route">
+        <button data-route="w4" aria-pressed="true">四周冲刺版</button>
+        <button data-route="m3" aria-pressed="false">三个月系统版</button>
+      </div>
+      <div class="canvas-wrap"><canvas id="cv-ap-c-progress" height="60"></canvas></div>
+      <div class="stat-row">
+        <div class="stat"><b id="v-ap-c-done">2</b><span>已完成任务</span></div>
+        <div class="stat"><b id="v-ap-c-total">16</b><span>总任务</span></div>
+        <div class="stat"><b id="v-ap-c-pct">13%</b><span>完成度</span></div>
+      </div>
+      <div id="r-ap-c-weeks"></div>
+    </div>
+    <div class="demo-hint">打开时四周版的前两项已经勾上,进度条显示 2 / 16。勾选任意一项,进度条和三个数字立刻变化;切到三个月版,两套进度分别保留,互不影响。刷新页面后回到初始的两项。</div>
+  </div>
+
+  <div class="quiz" data-id="q-ap-c-2">
+    <p class="q">你只有两周,每天能投入 2 小时,目标是训练一个 MNIST 分类器。哪种安排最合理?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="错在把两周全部花在推导上。矩阵形式的反向传播可以边写边补;两周结束时你没有任何可运行的模型,也无法判断自己哪里没懂。先跑通再深入,反馈更快。">先花两周把反向传播的矩阵形式完整推导一遍,再碰代码</button>
+      <button class="opt" data-k="B" data-ok data-why="对。把四周路线的前两周压缩:先线性回归,再 MLP 和训练循环,让 MNIST 先跑起来,再回头补数学。两周足够做到 97% 的 baseline。">按四周路线的前两周压缩:线性回归 → MLP → 训练循环,先让 MNIST 跑起来</button>
+      <button class="opt" data-k="C" data-why="错在目标和工具都不匹配。7B 语言模型微调需要数十 GB 显存和现成的数据管线,练不到 28×28 分类所需的归一化、损失函数和评估划分。">直接找一个 7B 语言模型的微调脚本改</button>
+      <button class="opt" data-k="D" data-why="错在读论文不能替代写训练循环。CIFAR-10 比 MNIST 难,你会同时卡在数据增强和模型结构上;两周内既读不完 SOTA,也跑不出结果。">先把 CIFAR-10 的 SOTA 论文全部读完</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">C.3</span>数据集与五个练手项目</h3>
+  <p>数据集选错,后面的调参全是白费。下面 7 个数据集都能在 10 分钟内下载完,规模从 150 行到 110 万字符,覆盖回归、分类、文本和序列。先用小数据把管线跑通,再换大数据,是唯一不会把自己绕晕的顺序。</p>
+
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>数据集</th><th>规模</th><th>输入</th><th>适合练什么</th></tr></thead>
+      <tbody>
+        <tr><td>Iris</td><td class="num">150 条,3 类</td><td>4 个特征</td><td>第一个分类器、决策边界</td></tr>
+        <tr><td>California housing</td><td class="num">20,640 行</td><td>8 个特征</td><td>回归、归一化、RMSE</td></tr>
+        <tr><td>MNIST</td><td class="num">70,000 张(60k/10k)</td><td>28×28 灰度</td><td>多分类、MLP 基线</td></tr>
+        <tr><td>Fashion-MNIST</td><td class="num">70,000 张</td><td>28×28 灰度</td><td>同一套代码换数据、调容量</td></tr>
+        <tr><td>CIFAR-10</td><td class="num">60,000 张(50k/10k)</td><td>32×32×3 彩色</td><td>卷积、数据增强</td></tr>
+        <tr><td>IMDB</td><td class="num">50,000 条影评</td><td>变长文本</td><td>情感分类、词袋与嵌入</td></tr>
+        <tr><td>Tiny Shakespeare</td><td class="num">1,115,394 字符</td><td>65 个不同字符</td><td>字符级语言模型、生成</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>五个项目,按难度排。每个都给了可验收的数字,做不到就回头补对应章节,不要直接换更花哨的模型。</p>
+  <ol class="list">
+    <li><strong>房价回归。</strong>California housing,20,640 行、8 个特征,网络 8→16→1,目标验证集 RMSE 低于 0.6(标签单位是 10 万美元)。这一项练的是输入归一化、均方误差和早停。</li>
+    <li><strong>MNIST 分类。</strong>60,000 张训练图、10,000 张测试图,784→128→10 的 MLP 有 101,770 个参数,批大小 64 时一轮是 938 次参数更新,3 轮后测试准确率应到 97% 以上。</li>
+    <li><strong>CIFAR-10 卷积。</strong>50,000 张 32×32 彩色图、10 类。一个约 10.6 万参数的小 CNN,配合随机裁剪与水平翻转,测试准确率应到 72% 到 78%。做不到 72%,先检查归一化和学习率,而不是急着加深网络。</li>
+    <li><strong>字符级语言模型。</strong>Tiny Shakespeare 共 1,115,394 个字符、65 个不同字符,初始交叉熵是 ln65≈4.17。训练到 1.6 以下后,让模型生成 200 个字符,看它是否学会了空格、换行和人物名的开头。</li>
+    <li><strong>mini GPT。</strong>2 层、4 个注意力头、d_model=128、上下文长度 128,约 43 万参数,在同一份莎士比亚文本上把验证损失压到 2.0 以下。这一项把嵌入、位置编码、注意力和残差连接串成一条线。</li>
+  </ol>
+
+  <p>下面这段 PyTorch 代码就是项目 2 的完整骨架,复制到本地就能跑。它没有数据增强,也没有学习率调度,故意保持最短:先确认每一步都在干什么,再加技巧。代码里的 784 来自 28×28,10 来自类别数,这两个数字换成别的数据集就不再成立。</p>
+
+  <div class="code-wrap"><div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div><pre class="code"><code>import torch
+from torch import nn
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms
+
+tf = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.1307,), (0.3081,)),
+])
+train_set = datasets.MNIST("data", train=True, download=True, transform=tf)
+test_set = datasets.MNIST("data", train=False, transform=tf)
+train_loader = DataLoader(train_set, batch_size=64, shuffle=True)
+test_loader = DataLoader(test_set, batch_size=256)
+
+model = nn.Sequential(
+    nn.Flatten(),
+    nn.Linear(784, 128), nn.ReLU(),
+    nn.Linear(128, 10),
+)
+loss_fn = nn.CrossEntropyLoss()
+opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+for epoch in range(3):
+    model.train()
+    for x, y in train_loader:
+        opt.zero_grad()
+        loss = loss_fn(model(x), y)
+        loss.backward()
+        opt.step()
+
+    model.eval()
+    correct = total = 0
+    with torch.no_grad():
+        for x, y in test_loader:
+            pred = model(x).argmax(1)
+            correct += (pred == y).sum().item()
+            total += y.size(0)
+    print(f"epoch {epoch + 1}: test acc {correct / total:.3f}")
+</code></pre></div>
+
+  <div class="stat-row">
+    <div class="stat"><b>101,770</b><span>这个 MLP 的参数量</span></div>
+    <div class="stat"><b>60,000</b><span>训练图片数</span></div>
+    <div class="stat"><b>938</b><span>每轮参数更新次数</span></div>
+    <div class="stat"><b>3</b><span>训练轮数</span></div>
+  </div>
+
+  <div class="quiz" data-id="q-ap-c-3">
+    <p class="q">一个语言模型的困惑度(perplexity)是 8,最准确的理解是哪一个?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="错在把困惑度当成了参数量。参数量是权重和偏置的个数,单位是「个」;困惑度是损失换算出来的无量纲指标,和网络大小没有直接关系。">模型有 8 个参数</button>
+      <button class="opt" data-k="B" data-ok data-why="对。困惑度等于平均交叉熵取 exp;ppl=8 对应平均交叉熵 ln8≈2.079 纳特,可以读作模型平均在 8 个等概率候选词之间犹豫。">模型平均在 8 个等概率候选词之间犹豫</button>
+      <button class="opt" data-k="C" data-why="错在把困惑度当成了准确率。答对 8% 意味着正确类概率约 0.08,交叉熵 -ln0.08≈2.526 纳特,对应困惑度约 12.5,不是 8。">模型答对了 8% 的词</button>
+      <button class="opt" data-k="D" data-why="错在把训练轮数和困惑度混为一谈。epoch 是数据过了几遍,困惑度是模型预测分布的尖锐程度;训练 8 轮和 ppl=8 只是数字碰巧相同。">训练一共跑了 8 轮</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">C.4</span>学完之后:能做什么,不该指望什么</h3>
+  <p>学完这本书,你应该能做的事情很具体。拿到一个表格任务,判断它该用回归还是分类;拿到一张图,知道先试 MLP 再试卷积;拿到一段文本,知道循环网络和 Transformer 的取舍。你能估算一个模型的参数量与显存,能读懂损失曲线的三种形状,能在验证集变差时先怀疑过拟合(overfitting),而不是盲目加层。你也能把「训练不动」拆成四个可检查的点:数据、初始化、学习率、梯度。</p>
+
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-h">你已经具备</div>
+      <ul class="list">
+        <li>独立训练 10 万到 100 万参数的小模型,并让测试指标可信</li>
+        <li>看懂论文里的架构图,把每个箭头对应到一个张量形状</li>
+        <li>写出训练、验证、保存、加载的完整循环</li>
+        <li>在单张 24GB 显卡上用 LoRA 微调 7B 级别的开源模型</li>
+      </ul>
+    </div>
+    <div class="card">
+      <div class="card-h">还不该指望</div>
+      <ul class="list">
+        <li>从零预训练 GPT 级模型:1750 亿参数、约 3.14×10<sup>23</sup> 次浮点运算,需要上千张加速卡和数百万美元</li>
+        <li>保证 SOTA:论文数字依赖数据清洗、训练技巧和算力,不是改两行代码就能复现</li>
+        <li>独立完成生产部署:服务化、监控、回滚、安全对齐是另一套工程</li>
+        <li>做理论证明:收敛性与泛化(generalization)的理论界属于研究数学,这本书只给直觉</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="callout warn"><b>常见误解:损失降到 0.004 就是训练成功</b><p>一个 784→512→10 的 MLP 在 MNIST 上训练 30 轮,训练损失可以低到 0.004、训练准确率 99.9%,但如果没做输入归一化、也没加任何正则,测试准确率可能只有 88%。两者差 11.9 个百分点,模型只是记住了 60,000 张训练图。更隐蔽的错误是拿测试集调参:你用它比较了 20 组超参数,它就参与了模型选择,再报它的准确率已经偏乐观。判断模型好坏只看一个数:在从未参与任何决策的测试集上的指标。</p></div>
+
+  <div class="quiz" data-id="q-ap-c-4">
+    <p class="q">训练集准确率 99.2%,验证集准确率 71.5%。接下来最合理的一步是什么?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="错在方向反了。训练集和验证集已经差 27.7 个百分点,再训练 50 轮通常只会让训练集更接近 100%,验证集更差,过拟合更严重。">再训练 50 轮,把训练集准确率推到 100%</button>
+      <button class="opt" data-k="B" data-why="错在把泛化问题当成了优化问题。学习率调大 10 倍不解决「记住了训练集」,还可能让损失震荡甚至发散。">把学习率调大 10 倍</button>
+      <button class="opt" data-k="C" data-ok data-why="对。先检查训练/验证划分有没有泄漏,再用数据增强、dropout 或权重衰减限制模型,并用早停保留验证集最好的那一轮。这些手段针对的正是 27.7 个百分点的差距。">先检查划分是否泄漏,再加数据增强、dropout 或权重衰减,并用早停</button>
+      <button class="opt" data-k="D" data-why="错在自欺欺人。把验证集并进训练集,指标会立刻变好看,但你失去了唯一的泛化信号;真正测试时性能仍然会崩,而且你再也没有数据能发现它。">把验证集并进训练集,重新训练</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <p>最后一句实话:这本书给你的是「能动手」,不是「能替代三年经验」。路线走完,你会拥有一个可复现的工作流和一套判断力;剩下的,靠项目和论文继续堆。下一步不必等全都准备好,挑上面五个项目里最小的那个,今晚把数据下载下来,先跑出一个能打印损失的循环。</p>
+
+  <div class="ch-foot">
+    <span class="state" data-state></span>
+    <span class="sp"></span>
+    <a class="btn" href="#ch-00-start">回到首页 →</a>
+  </div>
+</section>
+
+<script>
+defineDemo('d-ap-c-glossary', function(root){
+  const TERMS = [
+    {zh:'张量', en:'tensor', def:'多维数组的统称:0 维是标量,1 维是向量,2 维是矩阵;PyTorch 里一张 28×28 的图存成形状 [1, 28, 28] 的张量。'},
+    {zh:'向量', en:'vector', def:'一串有序的数,既是空间中的箭头,也是一个样本的特征列表;MNIST 一张图拉平后是 784 维向量。'},
+    {zh:'矩阵', en:'matrix', def:'二维数组,同时是一次线性变换;形状 m×n 表示把 n 维输入映射成 m 维输出。'},
+    {zh:'权重', en:'weight', def:'每个输入前面的可学习系数,绝对值越大,这个输入对输出的影响越强。'},
+    {zh:'偏置', en:'bias', def:'加权和之后再加的常数,作用是把激活函数的触发阈值整体平移。'},
+    {zh:'参数', en:'parameter', def:'权重和偏置的统称,训练改的就是这些数;一个 784→128→10 的 MLP 有 101,770 个参数。'},
+    {zh:'超参数', en:'hyperparameter', def:'由人设定、不被梯度更新的量,例如学习率 0.001、批大小 64、隐藏层宽度 128。'},
+    {zh:'神经元', en:'neuron', def:'先算加权和 z=w·x+b,再过激活函数的最小单元;它本身只能画出一条直线边界。'},
+    {zh:'激活函数', en:'activation function', def:'给线性输出加非线性,让多层网络能拟合曲线;没有它,叠多少层都等价于一层。'},
+    {zh:'ReLU', en:'ReLU', def:'max(0,x),正半轴导数恒为 1,计算便宜,是深层网络的默认选择。'},
+    {zh:'sigmoid', en:'sigmoid', def:'把任意实数压进 (0,1),常用于二分类概率;导数最大只有 0.25,堆深了容易梯度消失。'},
+    {zh:'softmax', en:'softmax', def:'把一组 logits 变成和为 1 的概率分布;logits 差距越大,分布越尖。'},
+    {zh:'logit', en:'logit', def:'softmax 之前的原始分数,可以为负,也不要求和为 1;它只是未归一化的证据。'},
+    {zh:'前向传播', en:'forward propagation', def:'输入逐层做矩阵乘法、加偏置、过激活,一直算到输出预测。'},
+    {zh:'反向传播', en:'backpropagation', def:'从损失出发,用链式法则把梯度一层层乘回每个参数;它是求梯度的算法,不是训练算法本身。'},
+    {zh:'梯度', en:'gradient', def:'损失对全部参数的偏导数拼成的向量,指向损失上升最快的方向。'},
+    {zh:'梯度下降', en:'gradient descent', def:'沿负梯度方向更新参数:w ← w - η∇L;η 是学习率。'},
+    {zh:'学习率', en:'learning rate', def:'每一步走多远;设成 1.0 可能震荡发散,设成 1e-6 则几百轮几乎不动。'},
+    {zh:'损失函数', en:'loss function', def:'把预测与标签的差距压缩成一个数;训练就是把这个数往下压。'},
+    {zh:'均方误差', en:'mean squared error', def:'(预测-目标)² 的平均,回归任务常用;误差翻倍,损失变成 4 倍。'},
+    {zh:'交叉熵', en:'cross-entropy', def:'-ln(正确类别的预测概率);给正确答案 0.9 时损失 0.105,给 0.01 时损失 4.605。'},
+    {zh:'独热编码', en:'one-hot', def:'长度为类别数、只有一个位置是 1 的向量,例如 10 类里的第 3 类写成 0010000000。'},
+    {zh:'轮次', en:'epoch', def:'把整个训练集完整过一遍;60,000 张图、批大小 64 时,一轮是 938 次参数更新。'},
+    {zh:'批', en:'batch', def:'一次前向与反向同时处理的样本组,常见大小 32、64、128;它让梯度更稳、GPU 更忙。'},
+    {zh:'优化器', en:'optimizer', def:'决定怎样使用梯度来更新参数的算法,SGD、Momentum、Adam 都是它。'},
+    {zh:'随机梯度下降', en:'SGD', def:'用一个小批的梯度估计全量梯度再更新;噪声大,但每一步便宜。'},
+    {zh:'Adam', en:'Adam', def:'同时累计梯度的一阶矩和二阶矩,为每个参数单独缩放步长,默认学习率常用 1e-3。'},
+    {zh:'权重衰减', en:'weight decay', def:'在损失里加 λ‖w‖²,把参数往 0 拉,抑制过大权重;常见 λ=1e-4。'},
+    {zh:'过拟合', en:'overfitting', def:'训练集指标很好、验证集明显变差;模型记住了样本里的噪声而不是规律。'},
+    {zh:'欠拟合', en:'underfitting', def:'训练集都学不好,通常是模型容量不够、特征太差或训练轮数不足。'},
+    {zh:'正则化', en:'regularization', def:'任何限制模型复杂度、换取泛化的手段,包括权重衰减、dropout、数据增强和早停。'},
+    {zh:'dropout', en:'dropout', def:'训练时按概率 p 随机把神经元输出置零,推理时关闭;常用 p 从 0.1 到 0.5。'},
+    {zh:'归一化', en:'normalization', def:'把数据或激活调整到相近尺度,例如减均值、除标准差,让优化更稳。'},
+    {zh:'批归一化', en:'batch normalization', def:'对一个批内每个特征做标准化,再学一组缩放和平移参数;训练和推理的统计量来源不同。'},
+    {zh:'泛化', en:'generalization', def:'模型在没见过的数据上仍然表现好的能力,才是训练的真正目标。'},
+    {zh:'验证集', en:'validation set', def:'训练过程中用来选超参数和早停的独立数据,不能拿来更新参数。'},
+    {zh:'测试集', en:'test set', def:'只在最后评估一次的数据;反复拿它调参,它就不再是「没见过」的数据。'},
+    {zh:'卷积', en:'convolution', def:'用小卷积核在图像上滑动,每个位置做加权求和;同一组核参数在全图共享。'},
+    {zh:'池化', en:'pooling', def:'在小窗口里取最大值或平均值,降低分辨率、扩大感受野,本身没有可学参数。'},
+    {zh:'循环神经网络', en:'RNN', def:'按时间步复用同一组参数、把上一步的隐藏状态传下去,用来处理变长序列。'},
+    {zh:'注意力', en:'attention', def:'用 query 与 key 的点积算权重,再对 value 加权求和;每个位置可以直接看任意位置。'},
+    {zh:'Transformer', en:'Transformer', def:'由多头注意力和前馈层堆叠成的架构,训练时可并行处理整个序列,是当代大模型的骨架。'},
+    {zh:'嵌入', en:'embedding', def:'把离散 token 映射成稠密向量的可学习查表;词表 50,000、维度 768 时表里有 3,840 万个参数。'},
+    {zh:'位置编码', en:'positional encoding', def:'给注意力注入顺序信息;因为注意力对输入顺序本身不敏感。'},
+    {zh:'预训练', en:'pretraining', def:'在大规模无标注数据上先学通用表示,例如用 1 万亿 token 训练下一词预测。'},
+    {zh:'微调', en:'fine-tuning', def:'在预训练模型上用较小学习率适配下游任务;全量微调和只调 LoRA 适配器是两种常见做法。'},
+    {zh:'词元', en:'token', def:'模型处理文本的最小单位,可以是一个字、一个词或词的一部分;英文 1 个 token 约 4 个字符。'},
+    {zh:'推理', en:'inference', def:'模型训练完成后做前向计算得到输出;不更新参数,通常比训练省显存。'},
+    {zh:'温度', en:'temperature', def:'生成时把 logits 除以 T;T 小于 1 分布更尖更确定,T 大于 1 更平更随机,T=1 保持原分布。'},
+    {zh:'困惑度', en:'perplexity', def:'平均交叉熵取 exp;ppl=8 相当于模型平均在 8 个等概率候选词之间犹豫。'}
+  ];
+
+  function esc(s){
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+  function hi(text, q){
+    if(!q) return esc(text);
+    const low = String(text).toLowerCase();
+    const lq = q.toLowerCase();
+    let out = '', i = 0;
+    while(true){
+      const j = low.indexOf(lq, i);
+      if(j < 0){ out += esc(String(text).slice(i)); break; }
+      out += esc(String(text).slice(i, j));
+      out += '<em>' + esc(String(text).slice(j, j + lq.length)) + '</em>';
+      i = j + lq.length;
+    }
+    return out;
+  }
+  function cardHTML(t, q){
+    return '<div class="card-h">' + hi(t.en, q) + '</div>' +
+           '<p><strong>' + hi(t.zh, q) + '</strong>:' + hi(t.def, q) + '</p>';
+  }
+
+  const input = root.querySelector('#i-ap-c-q');
+  const grid = root.querySelector('#g-ap-c-terms');
+  const count = root.querySelector('#o-ap-c-count');
+  const empty = root.querySelector('#e-ap-c-empty');
+  const cards = TERMS.map(function(t){
+    const d = document.createElement('div');
+    d.className = 'card';
+    grid.appendChild(d);
+    return {el:d, t:t};
+  });
+
+  function update(){
+    const q = input.value.trim();
+    const lq = q.toLowerCase();
+    let hit = 0;
+    cards.forEach(function(c){
+      const t = c.t;
+      const ok = !lq || (t.zh + ' ' + t.en + ' ' + t.def).toLowerCase().indexOf(lq) >= 0;
+      c.el.hidden = !ok;
+      if(ok){
+        hit++;
+        c.el.innerHTML = cardHTML(t, q);
+      }
+    });
+    count.textContent = hit + ' / ' + TERMS.length;
+    empty.hidden = hit > 0;
+  }
+
+  input.addEventListener('input', update);
+  input.addEventListener('search', update);
+  update();
+});
+
+defineDemo('d-ap-c-route', function(root){
+  const ROUTES = {
+    w4: {
+      name: '四周冲刺版',
+      weeks: [
+        {title:'第 1 周 · 打通一个神经元', tasks:[
+          '读完第 0—3 章,用纸笔手推一次梯度下降',
+          '用 numpy 实现线性回归,把损失从 2.4 降到 0.02 以下',
+          '画出 2→3→1 网络的前向与反向,梯度与数值微分误差小于 1e-6',
+          '做完第 4 章测验,能解释隐藏层为什么必要'
+        ]},
+        {title:'第 2 周 · 写出训练循环', tasks:[
+          '用 NN.MLP 在 moons 数据上训到 92% 以上',
+          '故意把学习率调到 1.0,记录损失爆炸的那一轮',
+          '在同一份数据上对比 SGD 与 Adam 的收敛曲线',
+          '实现早停:验证集连续 5 轮不降就停'
+        ]},
+        {title:'第 3 周 · 进入视觉', tasks:[
+          '训练 MNIST MLP,测试集准确率至少 97%',
+          '换成一个小 CNN,参数量压到 15 万以内而准确率不降',
+          '可视化第一层 8 个卷积核,解释它们各自响应什么',
+          '加随机水平翻转与裁剪,把训练/验证差距压到 3 个百分点内'
+        ]},
+        {title:'第 4 周 · 序列与交付', tasks:[
+          '训练字符级 RNN,Tiny Shakespeare 上损失从 4.17 降到 1.6 以下',
+          '用注意力做一个玩具翻译,能对齐 5 个词即可',
+          '导出模型,写一个 30 行以内的推理脚本',
+          '写 800 字复现报告,附训练曲线和 3 个失败尝试'
+        ]}
+      ]
+    },
+    m3: {
+      name: '三个月系统版',
+      weeks: [
+        {title:'第 1 周 · 数学与工具', tasks:[
+          '装好 Python 与 PyTorch,跑通张量、广播与自动求导',
+          '用 numpy 复现点积、矩阵乘法与 softmax'
+        ]},
+        {title:'第 2 周 · 单层模型', tasks:[
+          '线性回归加梯度下降,画出损失曲线',
+          '逻辑回归加交叉熵,理解 logits 与概率'
+        ]},
+        {title:'第 3 周 · 多层网络', tasks:[
+          '手写一个两层网络的反向传播并与数值微分对照',
+          '用 NN.MLP 解决 moons,画出决策边界'
+        ]},
+        {title:'第 4 周 · 训练工程', tasks:[
+          '做一次学习率扫描,记录 5 个量级的曲线',
+          '实现数据划分、早停与模型保存'
+        ]},
+        {title:'第 5 周 · 视觉基础', tasks:[
+          'MNIST MLP 达到 97%,并做一次错误分析',
+          '手推一次 3×3 卷积与 2×2 最大池化'
+        ]},
+        {title:'第 6 周 · 卷积网络', tasks:[
+          '小 CNN 在 CIFAR-10 上达到 72%',
+          '加归一化与数据增强,比较训练/验证差距'
+        ]},
+        {title:'第 7 周 · 序列模型', tasks:[
+          '训练字符级 RNN,生成 200 个字符',
+          '加梯度裁剪,观察长序列上的稳定度'
+        ]},
+        {title:'第 8 周 · 注意力', tasks:[
+          '手写 scaled dot-product attention',
+          '扩成 4 头注意力,检查输出形状'
+        ]},
+        {title:'第 9 周 · Transformer', tasks:[
+          '搭一个 2 层 mini GPT,约 43 万参数',
+          '训练到验证损失低于 2.0'
+        ]},
+        {title:'第 10 周 · 预训练与微调', tasks:[
+          '在自己的文本上继续预训练一个小模型',
+          '用 LoRA 微调一个开源 7B 模型'
+        ]},
+        {title:'第 11 周 · 评估与调试', tasks:[
+          '构造错误分析表,找出前 20 个失败样本',
+          '画混淆矩阵与损失曲线,写 3 条结论'
+        ]},
+        {title:'第 12 周 · 交付', tasks:[
+          '复现一篇小论文的表格,误差控制在 2 个百分点内',
+          '写 2,000 字报告并开源可运行代码'
+        ]}
+      ]
+    }
+  };
+
+  const checked = {
+    w4: new Set(['w4-0-0','w4-0-1']),
+    m3: new Set(['m3-0-0','m3-0-1','m3-1-0'])
+  };
+  let cur = 'w4';
+
+  const seg = root.querySelector('#seg-ap-c-route');
+  const weeksEl = root.querySelector('#r-ap-c-weeks');
+  const cv = root.querySelector('#cv-ap-c-progress');
+  const doneEl = root.querySelector('#v-ap-c-done');
+  const totalEl = root.querySelector('#v-ap-c-total');
+  const pctEl = root.querySelector('#v-ap-c-pct');
+
+  function totalTasks(route){ return route.weeks.reduce(function(s,w){ return s + w.tasks.length; }, 0); }
+
+  function rr(ctx, x, y, w, h, r){
+    r = Math.min(r, h / 2, w / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function draw(){
+    const route = ROUTES[cur];
+    const total = totalTasks(route);
+    const done = checked[cur].size;
+    const fit = NN.fitCanvas(cv, 60);
+    const ctx = fit.ctx, w = fit.w;
+    ctx.clearRect(0, 0, w, 60);
+    ctx.font = '500 11px "JetBrains Mono", ui-monospace, monospace';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = NN.token('--muted', '#68798C');
+    ctx.textAlign = 'left';
+    ctx.fillText(route.name + ' · ' + total + ' 项', 2, 12);
+    ctx.textAlign = 'right';
+    ctx.fillText(done + ' / ' + total, w - 2, 12);
+    ctx.textAlign = 'left';
+    const y = 32, bh = 10;
+    rr(ctx, 2, y, w - 4, bh, 5);
+    ctx.fillStyle = NN.token('--line', '#CBD7E3');
+    ctx.fill();
+    const fw = (w - 4) * done / total;
+    if(fw > 0){
+      rr(ctx, 2, y, Math.max(bh, fw), bh, 5);
+      ctx.fillStyle = NN.token('--accent', '#1F4FD1');
+      ctx.fill();
+    }
+    const pct = Math.round(done / total * 100);
+    doneEl.textContent = String(done);
+    totalEl.textContent = String(total);
+    pctEl.textContent = pct + '%';
+  }
+
+  function render(){
+    weeksEl.innerHTML = '';
+    ROUTES[cur].weeks.forEach(function(wk, wi){
+      const h = document.createElement('h4');
+      h.textContent = wk.title;
+      weeksEl.appendChild(h);
+      const box = document.createElement('div');
+      box.className = 'controls';
+      wk.tasks.forEach(function(txt, ti){
+        const key = cur + '-' + wi + '-' + ti;
+        const lab = document.createElement('label');
+        lab.className = 'pill';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = checked[cur].has(key);
+        cb.addEventListener('change', function(){
+          if(cb.checked) checked[cur].add(key);
+          else checked[cur].delete(key);
+          draw();
+        });
+        lab.appendChild(cb);
+        lab.appendChild(document.createTextNode(txt));
+        box.appendChild(lab);
+      });
+      weeksEl.appendChild(box);
+    });
+    const btns = seg.querySelectorAll('button');
+    btns.forEach(function(b){
+      b.setAttribute('aria-pressed', b.getAttribute('data-route') === cur ? 'true' : 'false');
+    });
+    draw();
+  }
+
+  seg.querySelectorAll('button').forEach(function(b){
+    b.addEventListener('click', function(){
+      cur = b.getAttribute('data-route');
+      render();
+    });
+  });
+
+  if(window.Theme && window.Theme.on) window.Theme.on(draw);
+  window.addEventListener('resize', draw);
+  render();
+});
+</script>

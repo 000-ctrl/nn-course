@@ -1,0 +1,902 @@
+<section class="ch" id="ch-08-conv" data-num="08" data-title="卷积网络">
+  <header class="ch-head">
+    <div class="ch-eyebrow"><span class="dot"></span>第 08 章 · 视觉</div>
+    <h1 class="ch-title">卷积网络</h1>
+    <p class="ch-sub">用一个小窗口滑过整张图,把局部边缘逐层组合成物体,顺便把参数量砍掉三个数量级。</p>
+    <div class="ch-rule"></div>
+  </header>
+
+  <div class="prereq"><b>读前</b><span>第 02 章的展平与全连接、第 03 章的学习率、第 04 章的 ReLU、第 05 章的反向传播、第 06 章的 epoch;第 07 章的过拟合与数据增强用于 8.4—8.6。</span><b>可跳过</b><span>8.4 节的网络年表、8.6 节的 PyTorch 代码块;不影响 8.1—8.3 主线。</span></div>
+
+  <p class="lead">一张 224×224 的彩色照片有 150,528 个数。把它拉直送进全连接层,只第一层(1000 个隐藏单元)就需要 1.5 亿个权重。更糟的是,图像左上角的像素和右下角的像素被当成两列毫不相干的数字。卷积网络(convolutional network,CNN)用两个假设同时解决这两件事:相邻像素有关,这叫<strong>局部性(locality)</strong>;同一图案出现在哪里都还是同一图案,这叫<strong>平移不变性(translation invariance)</strong>。</p>
+
+  <h3><span class="h3-n">8.1</span>图像是三维张量</h3>
+
+  <p>一张彩色图在计算机里是三维张量(tensor):高 <code>H</code>、宽 <code>W</code>、通道数(channel)<code>C</code>。RGB 图的 <code>C=3</code>;一批 32 张 224×224 的图是 <code>32×3×224×224</code>。灰度图 <code>C=1</code>,所以手写数字常写成 <code>28×28×1</code>。全连接层必须先把它展平(flatten)成一列 150,528 个数,这个动作同时丢掉了两样东西:哪些像素挨着谁,以及这个图案在图的哪个位置。</p>
+
+  <p>局部性说的是:判断一个像素是不是猫耳朵的尖端,你不需要看整张照片,看它周围 5 个像素就够了。平移不变性说的是:同一只猫在左上角或右下角,都应该激活同一组“猫耳检测器”。卷积的做法是把一个很小的权重窗口拴在整张图上滑动,每个位置都用同一组权重,这叫权重共享(weight sharing)。一个 3×3、输入 3 通道的卷积核只有 <code>3×3×3+1=28</code> 个参数;在 224×224 的图上,它被重复使用 50,176 次。参数不随图像尺寸增长,这是 CNN 与全连接层最根本的差别。</p>
+
+  <p>严格地说,卷积提供的是平移等变(equivariance):输入里的猫耳向右移 10 像素,特征图里的响应也向右移 10 像素,而不是保持不变。真正的不变性来自后面的池化、全局池化和数据增强。这个区别在调试时很有用:特征图跟着移动是正常的,不跟才说明哪里错了。</p>
+
+  <h3><span class="h3-n">8.2</span>卷积核:一个可学习的小窗口</h3>
+
+  <p>卷积核(kernel,也叫滤波器 filter)是一个小矩阵,常见尺寸 3×3 或 5×5。它覆盖输入的一小块,把对应位置的数字逐项相乘再求和,加一个偏置(bias),最后通常过一层 ReLU。对单个输出位置,计算是:</p>
+
+  <div class="math"><var>y</var><sub>i,j</sub> = Σ<sub>c,u,v</sub> <var>K</var><sub>c,u,v</sub> · <var>X</var><sub>c, i·s+u−p, j·s+v−p</sub> + <var>b</var></div>
+
+  <p>其中 <code>K</code> 是卷积核权重,<code>X</code> 是输入,Σ 是求和(sum),<code>c</code> 遍历输入通道,<code>i,j</code> 是输出位置,<code>u,v</code> 是窗口内偏移,<code>b</code> 是偏置,<code>s</code> 是步幅,<code>p</code> 是填充。用人话说:窗口在图上每次挪 <code>s</code> 格,窗口内做一次加权求和。<strong>卷积核里的数字不是人定的,是反向传播学出来的。</strong>训练开始前它们是随机小数,训练后第一层常长出类似边缘检测器的图案,但那是结果,不是前提。</p>
+
+  <p>两个超参数决定输出尺寸。<strong>步幅(stride)</strong>是窗口每次移动的格数;<strong>填充(padding)</strong>是在图像四周补零的圈数,补 <code>p=1</code> 能让 3×3 卷积的输出和输入一样大。输出边长的公式是:</p>
+
+  <div class="math"><var>H</var><sub>out</sub> = ⌊(<var>H</var> + 2<var>P</var> − <var>K</var>) / <var>S</var>⌋ + 1</div>
+
+  <p><code>K</code> 此处指核边长(kernel size),非权重;<code>P</code>/<code>S</code> 即 padding/stride;⌊⌋ 是向下取整(floor)。代入数字:32×32 输入、5×5 核、<code>P=2</code>、<code>S=1</code>,输出 <code>(32+4−5)/1+1=32</code>;把步幅改成 2,输出 16;224×224 输入、7×7 核、<code>P=3</code>、<code>S=2</code>,输出 112,这正是 ResNet 的第一层。尺寸算错是初学者最常见的报错来源,写网络前先把每一层的 <code>H_out</code> 算一遍。</p>
+
+  <p>一个卷积核产生一张<strong>特征图(feature map)</strong>。想要 16 个特征,就用 16 个核,输出就是 16 个通道。输入 3 通道、输出 16 通道的 3×3 卷积,参数量是 <code>3×3×3×16+16=448</code>;同样把 150,528 维输入接到 16 个神经元,全连接层要 240 万个参数。1×1 卷积只做通道混合,不跨空间,参数量 <code>C_in×C_out</code>;64 通道到 256 通道只要 16,384 个参数,常用来升降维。</p>
+
+  <div class="demo" id="d-08-kernel">
+    <div class="demo-bar"><span class="live">交互</span><span>卷积核实验室:9×9 画布上的滑动窗口</span><span class="sp"></span><span class="tag">拖动绘制</span></div>
+    <div class="demo-body">
+      <div class="grid-2">
+        <div class="canvas-wrap"><canvas id="cv-08-kin" height="300"></canvas></div>
+        <div class="canvas-wrap"><canvas id="cv-08-kker" height="190"></canvas></div>
+      </div>
+      <div class="grid-2">
+        <div class="canvas-wrap"><canvas id="cv-08-kfeat" height="230"></canvas></div>
+        <div class="canvas-wrap"><canvas id="cv-08-kpool" height="230"></canvas></div>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><b id="o-08-kfmsize">7×7</b><span>特征图尺寸</span></div>
+        <div class="stat"><b id="o-08-kpoolsize">3×3</b><span>2×2 池化后</span></div>
+        <div class="stat"><b id="o-08-kpeak">0.00</b><span>最大绝对响应</span></div>
+      </div>
+      <div class="controls">
+        <div class="seg" id="seg-08-kernel">
+          <button data-k="edge" aria-pressed="true">边缘</button>
+          <button data-k="blur" aria-pressed="false">模糊 ÷16</button>
+          <button data-k="emboss" aria-pressed="false">浮雕</button>
+          <button data-k="custom" aria-pressed="false">自定义</button>
+        </div>
+        <button class="btn sm" id="b-08-kclear">清空</button>
+        <button class="btn sm" id="b-08-ksample">载入示例</button>
+      </div>
+      <div class="controls">
+        <div class="ctl"><label for="s-08-kstride">步幅 stride <output id="o-08-kstride">1</output></label><input id="s-08-kstride" type="range" min="1" max="2" value="1" step="1"></div>
+        <div class="ctl"><label for="s-08-kpad">填充 padding <output id="o-08-kpad">0</output></label><input id="s-08-kpad" type="range" min="0" max="1" value="0" step="1"></div>
+      </div>
+    </div>
+    <div class="demo-hint">在左边 9×9 画布上拖动画出图案(Shift+拖动擦除),右边是当前 3×3 核。选“自定义”后点核的格子可以循环修改数值。下方两张热力图分别是卷积响应和 2×2 最大池化结果;拖动步幅、填充,看输出尺寸如何变化。</div>
+  </div>
+
+  <div class="callout warn"><b>常见误解:卷积核就是人工设计的边缘检测器</b>
+  <p>上面的“边缘”“模糊”“浮雕”是为了让你看清卷积在做什么,它们是手写死的。真实网络里的核全部由损失函数学出来,同一层 64 个核会分工成不同的方向边缘、颜色斑块和纹理。换一个任务,比如识别细胞核或雷达回波,第一层学到的图案会和自然图像很不一样。把核当成“必须像 Sobel 算子”会限制你对网络的想象,也会让你在可视化时误以为模型坏了。</p></div>
+
+  <h3><span class="h3-n">8.3</span>池化、下采样与感受野</h3>
+
+  <p>池化(pooling)是在特征图上再做一次小窗口聚合,最常见的是 2×2 最大池化(max pooling):每个 2×2 块取最大值,步幅 2,输出边长减半。13×13 的特征图池化后是 6×6,丢掉最后一行一列。池化没有参数,不做乘法,作用有三个:减少后续计算量、扩大后续神经元的感受野、让响应对一两个像素的位移不那么敏感。平均池化(average pooling)取均值,保留整体强度;全局平均池化(global average pooling,GAP)把每张特征图压成一个数,常用来替代最后的全连接层,ResNet 就是这样把 7×7×2048 压成 2048 维再分类。</p>
+
+  <p>池化不是非有不可。很多现代网络用步幅为 2 的卷积做下采样,让网络自己学怎么压缩;但 2×2 最大池化简单、稳定,仍然是理解 CNN 的标准零件。</p>
+
+  <p><strong>感受野(receptive field)</strong>是输出特征图上一个神经元,能“看到”原始输入的多大区域。一层 3×3 卷积的感受野是 3×3;两层叠起来是 5×5;三层是 7×7。一般递推公式是:</p>
+
+  <div class="math"><var>r</var><sub>l</sub> = <var>r</var><sub>l−1</sub> + (<var>k</var><sub>l</sub> − 1) · <var>j</var><sub>l−1</sub>,&nbsp;&nbsp; <var>j</var><sub>l</sub> = <var>j</var><sub>l−1</sub> · <var>s</var><sub>l</sub></div>
+
+  <p>这里 <code>j</code> 是相邻输出点在输入上的间距。代入一个带下采样的栈:3×3 卷积(步幅 1)后感受野 3;2×2 池化(步幅 2)后 4;再来一层 3×3 卷积,感受野变成 <code>4+(3−1)×2=8</code>。深度带来的是指数级的覆盖增长。ResNet-50 最后一个特征点理论感受野约 483 像素,已经超过 224 的输入边长;这也是深层网络能判断“整只猫”而不是“一条边”的原因。</p>
+
+  <div class="demo" id="d-08-rf">
+    <div class="demo-bar"><span class="live">交互</span><span>深度如何放大感受野</span><span class="sp"></span><span class="tag">拖动滑块</span></div>
+    <div class="demo-body">
+      <div class="canvas-wrap"><canvas id="cv-08-rf" height="260"></canvas></div>
+      <div class="controls">
+        <div class="ctl"><label for="s-08-rfdepth">卷积层数 <output id="o-08-rfdepth">3</output></label><input id="s-08-rfdepth" type="range" min="1" max="10" value="3" step="1"></div>
+        <div class="seg" id="seg-08-rfk">
+          <button data-k="3" aria-pressed="true">3×3</button>
+          <button data-k="5" aria-pressed="false">5×5</button>
+        </div>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><b id="o-08-rf">7</b><span>感受野边长(像素)</span></div>
+        <div class="stat"><b id="o-08-rfparam">110,784</b><span>该栈参数量(64 通道)</span></div>
+        <div class="stat"><b id="o-08-rfgain">2</b><span>每层边长增量</span></div>
+      </div>
+    </div>
+    <div class="demo-hint">每一圈方框是一层卷积后的感受野,中心红点是最终输出神经元。层数从 1 拉到 10、核从 3×3 换成 5×5,看方框如何一层层套大;下面的参数量按每层 64 个通道估算。</div>
+  </div>
+
+  <p>把这三节串起来的最小流水线是:8×8 输入 → 4 个 3×3 卷积核(每个产生一张特征图)→ ReLU → 2×2 最大池化 → 展平成 64 维 → 全连接分类器。下面的演示用 4 个固定的边缘/斜线/斑点核做第一层,后面的 64→10 分类器在 600 个合成样本上预训练了 160 个 epoch,权重直接写进页面,所以打开就能推理。你画什么,它都会实时给出 0—9 的概率。</p>
+
+  <div class="demo" id="d-08-digit">
+    <div class="demo-bar"><span class="live">交互</span><span>手写数字:4 个卷积核 + 池化 + 10 类分类器</span><span class="sp"></span><span class="tag">实时推理</span></div>
+    <div class="demo-body">
+      <div class="grid-2">
+        <div class="canvas-wrap"><canvas id="cv-08-din" height="300"></canvas></div>
+        <div class="canvas-wrap"><canvas id="cv-08-dprob" height="300"></canvas></div>
+      </div>
+      <div class="canvas-wrap"><canvas id="cv-08-dfeat" height="150"></canvas></div>
+      <div class="stat-row">
+        <div class="stat"><b id="o-08-dpred">3</b><span>当前预测</span></div>
+        <div class="stat"><b id="o-08-dconf">0.000</b><span>置信度</span></div>
+        <div class="stat"><b id="o-08-dacc">0.0%</b><span>测试集准确率</span></div>
+      </div>
+      <div class="controls">
+        <button class="btn sm" id="b-08-dclear">清空</button>
+        <button class="btn sm" id="b-08-d3">载入 3</button>
+        <button class="btn sm" id="b-08-d7">载入 7</button>
+        <button class="btn primary" id="b-08-dtrain">继续训练</button>
+      </div>
+    </div>
+    <div class="demo-hint">在左边 8×8 网格上画一个数字(Shift+拖动擦除),右边立刻显示 10 个类别的概率,下面一行是 4 个卷积核产生的第一层特征图。画得偏离中心、笔画偏粗也能识别;点“继续训练”会让分类器在后台再跑 12 个 epoch。</div>
+  </div>
+
+  <h3><span class="h3-n">8.4</span>从 LeNet 到 ResNet</h3>
+
+  <p>1998 年 LeCun 的 LeNet-5 用 7 层、约 6 万个参数识别 32×32 的灰度手写数字,结构是“卷积—池化—卷积—池化—全连接”,已经具备今天 CNN 的全部骨架。2012 年 AlexNet 把深度加到 8 层、参数 6000 万,在 120 万张 ImageNet 图像、1000 类上把 top-5 错误率从 26.2% 降到 15.3%,关键改动是 ReLU、Dropout、两块 GPU 和数据增强。2014 年 VGG-16 证明“全部用 3×3 卷积、堆到 16 层”也有效,代价是 1.38 亿参数。两个 3×3 卷积的感受野等于一个 5×5,参数量却是 <code>2×9C²=18C²</code> 对 <code>25C²</code>,还多了一次非线性,所以小核堆叠比大核划算。</p>
+
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>网络</th><th>年份</th><th>深度</th><th>参数量</th><th>关键想法</th></tr></thead>
+    <tbody>
+      <tr><td>LeNet-5</td><td class="num">1998</td><td class="num">7</td><td class="num">约 6 万</td><td>卷积、池化、权值共享的雏形</td></tr>
+      <tr><td>AlexNet</td><td class="num">2012</td><td class="num">8</td><td class="num">6000 万</td><td>ReLU、Dropout、GPU 训练</td></tr>
+      <tr><td>VGG-16</td><td class="num">2014</td><td class="num">16</td><td class="num">1.38 亿</td><td>3×3 小核连续堆叠</td></tr>
+      <tr><td>ResNet-50</td><td class="num">2015</td><td class="num">50</td><td class="num">2560 万</td><td>残差连接、BatchNorm、瓶颈块</td></tr>
+    </tbody>
+  </table></div>
+
+  <p>继续加深会撞上一堵墙。研究者发现 56 层的普通网络,训练误差反而比 20 层的更高;这不是过拟合,因为训练集上的误差都降不下去,而是优化变难了。ResNet 的答案是<strong>残差连接(residual connection)</strong>:不让一层直接学目标映射 <code>H(x)</code>,而让它学残差 <code>F(x)=H(x)−x</code>,输出写成:</p>
+
+  <div class="math"><var>y</var> = <var>F</var>(<var>x</var>) + <var>x</var></div>
+
+  <p>如果这一层什么都不做最好,把 <code>F(x)</code> 压到 0 比把 <code>H(x)</code> 学成恒等映射容易得多。加法那条捷径(shortcut)没有参数,梯度可以原样流回去,深层网络因此能训练。ResNet-152 有 152 层,ImageNet top-5 错误率 3.57%;它的残差块通常是“1×1 降维—3×3 卷积—1×1 升维”的瓶颈结构,50 层版本只有 2560 万参数,约为 VGG 的 1/5。BatchNorm 放在卷积和 ReLU 之间,把每层输入拉回稳定分布,让更深的网络能用更大的学习率。</p>
+
+  <p>今天你看到的所有视觉骨干——ResNet、EfficientNet、ConvNeXt——都还在用“局部卷积 + 归一化 + 残差 + 下采样”这套组合。理解这四件套,比记住某个网络的层数更有用。</p>
+
+  <h3><span class="h3-n">8.5</span>迁移学习:别从随机权重开始</h3>
+
+  <p>从头训练 ResNet-50 需要 128 万张图、1000 个类别和数百万次参数更新。你手上可能只有 300 张标注好的电路板缺陷图。这时正确的起点不是随机初始化,而是<strong>迁移学习(transfer learning)</strong>:拿一个在 ImageNet 上训练好的网络,它已经学会了边缘、纹理、材质和部件,这些特征对很多任务都能复用。</p>
+
+  <ol class="steps">
+    <li><strong>冻结骨干(freeze backbone)。</strong>把卷积层的 <code>requires_grad</code> 设为 <code>False</code>,让它们不更新。</li>
+    <li><strong>换头。</strong>把最后的 1000 类全连接层换成 <code>Linear(2048, 10)</code>,新头随机初始化。这一步只有约 2 万个参数需要训练。</li>
+    <li><strong>先训头。</strong>学习率 <code>1e-3</code>,20 个 epoch,通常几分钟就能得到一个不差的基线;数据极少时这叫线性探测(linear probe)。</li>
+    <li><strong>再整体微调(fine-tune)。</strong>解冻全部层,学习率降到 <code>1e-4</code> 左右,再训 10—30 个 epoch。预训练权重已经接近好解,学习率太大会把它们冲掉。</li>
+  </ol>
+
+  <p>两个细节容易踩坑。第一,BatchNorm 的滑动均值是在 ImageNet 上统计的,小批量微调时不要让它乱跑,可以冻结 BN 的统计量,或者把 batch 调到 32 以上。第二,数据增强要符合任务语义:自然图像左右翻转通常无害,但医学影像的左右翻转可能把病灶位置改错,文字图像翻转后直接不再是同一个字。</p>
+
+  <div class="callout tip"><b>实践顺序</b>
+  <p>先冻结骨干、只训新头,记录验证集准确率;如果它明显低于你的预期,再解冻最后两三个 stage 微调,而不是一上来就全网络放开。每改一次,只动一个变量,你才知道收益来自哪里。</p></div>
+
+  <h3><span class="h3-n">8.6</span>写一个能跑的小 CNN</h3>
+
+  <p>下面这段 PyTorch 代码输入 <code>8×3×32×32</code>,经过两组“3×3 卷积 + ReLU + 2×2 池化”,展平后接 10 类全连接层。模型一共 25,578 个参数,在 CPU 上训练几千张 32×32 的图毫无压力。注意每一层的尺寸注释:32 池化到 16,再池化到 8,所以展平后是 <code>32×8×8=2048</code>。</p>
+
+  <div class="code-wrap"><div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div><pre class="code"><code>import torch
+import torch.nn as nn
+
+model = nn.Sequential(
+    nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1),  # 8x3x32x32 -> 8x16x32x32
+    nn.ReLU(),
+    nn.MaxPool2d(2),                                       # -> 8x16x16x16
+    nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1), # -> 8x32x16x16
+    nn.ReLU(),
+    nn.MaxPool2d(2),                                       # -> 8x32x8x8
+    nn.Flatten(),                                          # -> 8x2048
+    nn.Linear(32 * 8 * 8, 10)                              # -> 8x10
+)
+
+x = torch.randn(8, 3, 32, 32)
+print(model(x).shape)                          # torch.Size([8, 10])
+print(sum(p.numel() for p in model.parameters()))  # 25578
+
+opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+loss_fn = nn.CrossEntropyLoss()
+# for xb, yb in loader:
+#     opt.zero_grad()
+#     loss = loss_fn(model(xb), yb)
+#     loss.backward()
+#     opt.step()</code></pre></div>
+
+  <p>训练这类小网络,先把三件事做对:输入归一化到 0 附近、标签从 0 开始编号、每层输出尺寸打印一遍。损失不降时先查数据和标签,再查学习率;训练集准确率 99% 而验证集只有 70% 时,优先加数据增强和权重衰减,而不是继续加层。</p>
+
+  <div class="quiz" data-id="q-08-1">
+    <p class="q">输入特征图 28×28,用 5×5 卷积核、padding=2、stride=1,输出边长是多少?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="24 是忘了加回 padding 的结果:(28−5)/1+1=24。padding=2 在四周各补两圈零,分子要加 2P=4,输出仍然是 28。">24</button>
+      <button class="opt" data-k="B" data-ok data-why="代入公式 (28+2×2−5)/1+1=28。padding=2 配 5×5 核正好保持尺寸不变,这是 same padding 的常见组合。">28</button>
+      <button class="opt" data-k="C" data-why="26 把 padding 只算了一边,或者把核尺寸当成了 6。公式里补的是 2P,两侧都要加。">26</button>
+      <button class="opt" data-k="D" data-why="30 是误以为 padding 让输出变大;padding 补的是零,只抵消卷积造成的缩小,不会把尺寸撑到超过输入加两圈。">30</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <div class="quiz" data-id="q-08-2">
+    <p class="q">一个 3×3 卷积层,输入 32 通道、输出 64 通道,带偏置,参数量是多少?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="576 只算了 64 个核的 9 个空间权重,漏掉了每个核要在 32 个输入通道上各有一组权重,也漏掉了偏置。">576</button>
+      <button class="opt" data-k="B" data-why="18,432 算对了 32×64×9,但漏掉 64 个偏置,每个输出通道一个。">18,432</button>
+      <button class="opt" data-k="C" data-ok data-why="3×3×32×64+64=18,496。每个输出通道对应一个 3×3×32 的核,再加一个偏置;参数在空间上共享,与图像大小无关。">18,496</button>
+      <button class="opt" data-k="D" data-why="36,864 把输入通道和输出通道相乘后又乘了两次 32,相当于把 32 当成了空间尺寸;空间尺寸只有卷积核的 3×3。">36,864</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <div class="quiz" data-id="q-08-3">
+    <p class="q">只有 300 张标注图,想把 ImageNet 预训练的 ResNet 用到自己的 10 类任务,最合理的起点是?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="300 张图从头训练 2560 万参数的网络几乎必然过拟合,而且随机初始化会让卷积层学不到可用的边缘和纹理,收敛也很慢。">丢掉预训练权重,从头训练整个网络</button>
+      <button class="opt" data-k="B" data-ok data-why="冻结卷积骨干、把 1000 类头换成 10 类头,先只训新头。这样可利用预训练特征,可训练参数只有约 2 万个,300 张图也能得到稳定基线;之后可再低学习率微调。">冻结卷积层,只训练新的 10 类分类头</button>
+      <button class="opt" data-k="C" data-why="保留 1000 类输出层等于让模型继续预测 ImageNet 类别,你的 10 类标签根本没有对应的输出位置,损失无法正确计算。">保留原来的 1000 类输出层,只改数据标签</button>
+      <button class="opt" data-k="D" data-why="删掉卷积层只剩分类头,输入就变成了原始像素,预训练学到的层级特征全部丢失,等同于在 300 张图上训练一个线性模型。">删掉所有卷积层,只保留最后的分类头</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <div class="ch-foot">
+    <span class="state" data-state></span>
+    <span class="sp"></span>
+    <a class="btn" href="#ch-09-sequence">下一章 →</a>
+  </div>
+</section>
+
+<script>
+defineDemo('d-08-kernel', function(root){
+  if(!window.NN){ setTimeout(function(){ window.DEMOS['d-08-kernel'](root); }, 0); return; }
+  const q = function(s){ return root.querySelector(s); };
+  const cvIn = q('#cv-08-kin'), cvK = q('#cv-08-kker'), cvF = q('#cv-08-kfeat'), cvP = q('#cv-08-kpool');
+  const seg = q('#seg-08-kernel');
+  const sStride = q('#s-08-kstride'), sPad = q('#s-08-kpad');
+  const oStride = q('#o-08-kstride'), oPad = q('#o-08-kpad');
+  const oFm = q('#o-08-kfmsize'), oPool = q('#o-08-kpoolsize'), oPeak = q('#o-08-kpeak');
+
+  const SAMPLE = [
+    [0,0,0,1,1,1,1,0,0],
+    [0,0,1,0,0,0,0,1,0],
+    [0,1,0,0,0,0,0,0,1],
+    [1,0,0,0,1,0,0,0,1],
+    [1,0,0,1,1,1,0,0,1],
+    [1,0,0,0,1,0,0,0,1],
+    [0,1,0,0,0,0,0,0,1],
+    [0,0,1,0,0,0,0,1,0],
+    [0,0,0,1,1,1,1,0,0]
+  ];
+  const PRESETS = {
+    edge:   { m:[[0,-1,0],[-1,4,-1],[0,-1,0]], scale:1 },
+    blur:   { m:[[1,2,1],[2,4,2],[1,2,1]], scale:1/16 },
+    emboss: { m:[[-2,-1,0],[-1,1,1],[0,1,2]], scale:1 }
+  };
+  let grid = SAMPLE.map(function(r){ return r.slice(); });
+  let custom = [[0,0,0],[0,1,0],[0,0,0]];
+  let mode = 'edge';
+  let stride = 1, pad = 0;
+  let painting = false, erasing = false;
+  let inGeom = { cell:30, ox:0, oy:0, w:300 };
+  let kerGeom = { cell:50, gap:3, W:162 };
+  let dragR = -1, dragC = -1;
+
+  function kernel(){
+    if(mode === 'custom') return { m:custom, scale:1 };
+    return PRESETS[mode];
+  }
+
+  function convolve(){
+    const k = kernel();
+    const H = grid.length, W = grid[0].length, K = 3;
+    const outH = Math.floor((H + 2*pad - K) / stride) + 1;
+    const outW = Math.floor((W + 2*pad - K) / stride) + 1;
+    const out = [];
+    for(let oy=0; oy<outH; oy++){
+      const row = [];
+      for(let ox=0; ox<outW; ox++){
+        let s = 0;
+        for(let u=0; u<K; u++){
+          for(let v=0; v<K; v++){
+            const iy = oy*stride + u - pad;
+            const ix = ox*stride + v - pad;
+            if(iy>=0 && iy<H && ix>=0 && ix<W) s += grid[iy][ix] * k.m[u][v];
+          }
+        }
+        row.push(s * k.scale);
+      }
+      out.push(row);
+    }
+    return { data:out, h:outH, w:outW };
+  }
+
+  function pool2(m){
+    const out = [];
+    const oh = Math.floor(m.length/2), ow = Math.floor(m[0].length/2);
+    for(let y=0; y<oh; y++){
+      const row = [];
+      for(let x=0; x<ow; x++){
+        let v = m[y*2][x*2];
+        v = Math.max(v, m[y*2][x*2+1], m[y*2+1][x*2], m[y*2+1][x*2+1]);
+        row.push(v);
+      }
+      out.push(row);
+    }
+    return out;
+  }
+
+  function drawInput(){
+    const fit = NN.fitCanvas(cvIn, 300);
+    const ctx = fit.ctx, w = fit.w, h = fit.h;
+    ctx.clearRect(0,0,w,h);
+    const n = grid.length;
+    const top = 14;
+    const cell = Math.min(w, h - top) / n;
+    const ox = (w - cell*n)/2, oy = top + (h - top - cell*n)/2;
+    inGeom = { cell:cell, ox:ox, oy:oy, w:w };
+    for(let r=0; r<n; r++){
+      for(let c=0; c<n; c++){
+        const x = ox + c*cell, y = oy + r*cell;
+        ctx.fillStyle = grid[r][c] ? NN.token('--accent','#1F4FD1') : NN.token('--surface','#fff');
+        ctx.fillRect(x+0.5, y+0.5, cell-1, cell-1);
+        ctx.strokeStyle = NN.token('--line','#cbd7e3');
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x+0.5, y+0.5, cell-1, cell-1);
+      }
+    }
+    ctx.fillStyle = NN.token('--muted','#68798c');
+    ctx.font = '10px "JetBrains Mono", monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('输入 9×9', ox+2, oy-5);
+  }
+
+  function drawKernel(){
+    const k = kernel();
+    NN.drawMatrix(cvK, {
+      data: k.m,
+      diverging: true,
+      showVals: true,
+      cell: 50,
+      gap: 3,
+      min: -2,
+      max: 2
+    });
+    kerGeom = { cell:50, gap:3, W:3*50+4*3 };
+  }
+
+  function drawFeature(res, pooled){
+    const fw = Math.max(220, Math.min(380, cvF.parentElement.clientWidth || 340));
+    const fm = res.data;
+    let absMax = 1e-9;
+    for(let r=0; r<fm.length; r++) for(let c=0; c<fm[r].length; c++) absMax = Math.max(absMax, Math.abs(fm[r][c]));
+    const disp = fm.map(function(row){ return row.map(function(v){ return v/absMax; }); });
+    const cellF = Math.max(16, Math.min(42, Math.floor((fw-26)/Math.max(1,res.w))));
+    NN.drawMatrix(cvF, {
+      data: disp,
+      diverging: true,
+      min: -1,
+      max: 1,
+      cell: cellF,
+      gap: 2
+    });
+    const ctx = cvF.getContext('2d');
+    ctx.fillStyle = NN.token('--muted','#68798c');
+    ctx.font = '10px "JetBrains Mono", monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('特征图 ' + res.h + '×' + res.w, 4, 11);
+
+    const cellP = Math.max(16, Math.min(46, Math.floor((fw-26)/Math.max(1, pooled.length))));
+    NN.drawMatrix(cvP, {
+      data: pooled,
+      diverging: true,
+      min: -1,
+      max: 1,
+      cell: cellP,
+      gap: 2
+    });
+    const ctx2 = cvP.getContext('2d');
+    ctx2.fillStyle = NN.token('--muted','#68798c');
+    ctx2.font = '10px "JetBrains Mono", monospace';
+    ctx2.textAlign = 'left';
+    ctx2.fillText('2×2 池化 ' + pooled.length + '×' + (pooled[0] ? pooled[0].length : 0), 4, 11);
+  }
+
+  function redraw(){
+    drawInput();
+    drawKernel();
+    const res = convolve();
+    const pooled = pool2(res.data);
+    let absMax = 0;
+    for(let r=0; r<res.data.length; r++) for(let c=0; c<res.data[r].length; c++) absMax = Math.max(absMax, Math.abs(res.data[r][c]));
+    drawFeature(res, pooled);
+    oFm.textContent = res.h + '×' + res.w;
+    oPool.textContent = pooled.length + '×' + (pooled[0] ? pooled[0].length : 0);
+    oPeak.textContent = NN.fmt(absMax, 2);
+  }
+
+  function paintAt(e){
+    const rect = cvIn.getBoundingClientRect();
+    const scale = inGeom.w / rect.width;
+    const x = (e.clientX - rect.left) * scale;
+    const y = (e.clientY - rect.top) * scale;
+    const c = Math.floor((x - inGeom.ox) / inGeom.cell);
+    const r = Math.floor((y - inGeom.oy) / inGeom.cell);
+    if(r<0 || r>=grid.length || c<0 || c>=grid[0].length) return;
+    if(r===dragR && c===dragC) return;
+    dragR = r; dragC = c;
+    grid[r][c] = erasing ? 0 : 1;
+  }
+
+  cvIn.addEventListener('pointerdown', function(e){
+    e.preventDefault();
+    painting = true;
+    erasing = e.shiftKey || e.button === 2;
+    dragR = -1; dragC = -1;
+    try{ cvIn.setPointerCapture(e.pointerId); }catch(err){}
+    paintAt(e);
+    redraw();
+  });
+  cvIn.addEventListener('pointermove', function(e){
+    if(!painting) return;
+    paintAt(e);
+    redraw();
+  });
+  function endPaint(){
+    painting = false;
+    dragR = -1; dragC = -1;
+  }
+  cvIn.addEventListener('pointerup', endPaint);
+  cvIn.addEventListener('pointercancel', endPaint);
+  cvIn.addEventListener('contextmenu', function(e){ e.preventDefault(); });
+  cvIn.style.touchAction = 'none';
+
+  cvK.addEventListener('click', function(e){
+    if(mode !== 'custom') return;
+    const rect = cvK.getBoundingClientRect();
+    const scale = kerGeom.W / rect.width;
+    const x = (e.clientX - rect.left) * scale;
+    const y = (e.clientY - rect.top) * scale;
+    const c = Math.floor((x - kerGeom.gap) / (kerGeom.cell + kerGeom.gap));
+    const r = Math.floor((y - kerGeom.gap) / (kerGeom.cell + kerGeom.gap));
+    if(r<0 || r>2 || c<0 || c>2) return;
+    let v = custom[r][c];
+    v = v >= 2 ? -2 : v + 1;
+    custom[r][c] = v;
+    redraw();
+  });
+
+  seg.addEventListener('click', function(e){
+    const b = e.target.closest('button');
+    if(!b || !b.dataset.k) return;
+    mode = b.dataset.k;
+    seg.querySelectorAll('button').forEach(function(x){ x.setAttribute('aria-pressed', String(x === b)); });
+    redraw();
+  });
+
+  sStride.addEventListener('input', function(){
+    stride = parseInt(sStride.value, 10);
+    oStride.textContent = String(stride);
+    redraw();
+  });
+  sPad.addEventListener('input', function(){
+    pad = parseInt(sPad.value, 10);
+    oPad.textContent = String(pad);
+    redraw();
+  });
+
+  q('#b-08-kclear').addEventListener('click', function(){
+    grid = grid.map(function(r){ return r.map(function(){ return 0; }); });
+    redraw();
+  });
+  q('#b-08-ksample').addEventListener('click', function(){
+    grid = SAMPLE.map(function(r){ return r.slice(); });
+    redraw();
+  });
+
+  if(window.Theme && window.Theme.on) window.Theme.on(redraw);
+  redraw();
+});
+
+defineDemo('d-08-digit', function(root){
+  if(!window.NN){ setTimeout(function(){ window.DEMOS['d-08-digit'](root); }, 0); return; }
+  const q = function(s){ return root.querySelector(s); };
+  const cvIn = q('#cv-08-din'), cvProb = q('#cv-08-dprob'), cvFeat = q('#cv-08-dfeat');
+  const btnTrain = q('#b-08-dtrain');
+  const oPred = q('#o-08-dpred'), oConf = q('#o-08-dconf'), oAcc = q('#o-08-dacc');
+
+  const T = [
+    ['..####..','.#....#.','.#...##.','.#..#.#.','.#.#..#.','.##...#.','.#....#.','..####..'],
+    ['...#....','..##....','...#....','...#....','...#....','...#....','...#....','.#####..'],
+    ['..####..','.#....#.','......#.','.....#..','....#...','...#....','..#.....','.######.'],
+    ['..####..','.#....#.','......#.','...###..','......#.','......#.','.#....#.','..####..'],
+    ['....##..','...#.#..','..#..#..','.#...#..','######..','.....#..','.....#..','.....#..'],
+    ['.######.','.#......','.#......','.#####..','......#.','......#.','.#....#.','..####..'],
+    ['..####..','.#......','.#......','.#####..','.#....#.','.#....#.','.#....#.','..####..'],
+    ['.######.','......#.','.....#..','....#...','...#....','..#.....','..#.....','..#.....'],
+    ['..####..','.#....#.','.#....#.','..####..','.#....#.','.#....#.','.#....#.','..####..'],
+    ['..####..','.#....#.','.#....#.','.#....#.','..#####.','......#.','......#.','..####..']
+  ];
+  const KER = [
+    [[-1,0,1],[-1,0,1],[-1,0,1]],
+    [[-1,-1,-1],[0,0,0],[1,1,1]],
+    [[0,1,1],[-1,0,1],[-1,-1,0]],
+    [[0,-1,0],[-1,4,-1],[0,-1,0]]
+  ];
+  const KNAME = ['竖直边','横线','斜线','斑点'];
+
+  function parseDigit(rows){
+    return rows.map(function(r){ return r.split('').map(function(ch){ return ch === '#' ? 1 : 0; }); });
+  }
+  function convSame(img, k){
+    const H = img.length, W = img[0].length, out = [];
+    for(let y=0; y<H; y++){
+      const row = [];
+      for(let x=0; x<W; x++){
+        let s = 0;
+        for(let u=0; u<3; u++) for(let v=0; v<3; v++){
+          const yy = y+u-1, xx = x+v-1;
+          if(yy>=0 && yy<H && xx>=0 && xx<W) s += img[yy][xx] * k[u][v];
+        }
+        row.push(Math.max(0, s));
+      }
+      out.push(row);
+    }
+    return out;
+  }
+  function pool2(m){
+    const out = [];
+    for(let y=0; y<4; y++){
+      const row = [];
+      for(let x=0; x<4; x++){
+        let v = m[y*2][x*2];
+        v = Math.max(v, m[y*2][x*2+1], m[y*2+1][x*2], m[y*2+1][x*2+1]);
+        row.push(v);
+      }
+      out.push(row);
+    }
+    return out;
+  }
+  function mapsOf(img){
+    return KER.map(function(k){ return convSame(img, k); });
+  }
+  function feat(img){
+    const f = [];
+    mapsOf(img).forEach(function(m){
+      pool2(m).forEach(function(row){ row.forEach(function(v){ f.push(v); }); });
+    });
+    return f;
+  }
+  function shift(img, dx, dy){
+    const o = [];
+    for(let y=0; y<8; y++) o.push([0,0,0,0,0,0,0,0]);
+    for(let y=0; y<8; y++) for(let x=0; x<8; x++){
+      const yy = y+dy, xx = x+dx;
+      if(yy>=0 && yy<8 && xx>=0 && xx<8) o[yy][xx] = img[y][x];
+    }
+    return o;
+  }
+  function dilate(img){
+    const o = img.map(function(r){ return r.slice(); });
+    for(let y=0; y<8; y++) for(let x=0; x<8; x++){
+      if(!img[y][x]) continue;
+      if(y>0) o[y-1][x] = 1;
+      if(y<7) o[y+1][x] = 1;
+      if(x>0) o[y][x-1] = 1;
+      if(x<7) o[y][x+1] = 1;
+    }
+    return o;
+  }
+  function makeSet(seed, perClass){
+    const rng = NN.mulberry32(seed);
+    const out = [];
+    for(let d=0; d<10; d++){
+      const base = parseDigit(T[d]);
+      for(let i=0; i<perClass; i++){
+        let img = base;
+        const dx = Math.floor(rng()*3) - 1;
+        const dy = Math.floor(rng()*3) - 1;
+        img = shift(img, dx, dy);
+        if(rng() < 0.45) img = dilate(img);
+        if(rng() < 0.5){
+          img = img.map(function(r){
+            return r.map(function(v){ return rng() < 0.03 ? (v ? 0 : 1) : v; });
+          });
+        }
+        out.push({ f:feat(img), y:d });
+      }
+    }
+    return out;
+  }
+
+  const trainSet = makeSet(7, 60);
+  const testSet = makeSet(42, 25);
+  // 预置权重:在 600 个合成样本上训练 160 个 epoch 得到,打开页面即可推理
+  const W0 = [
+    [1.46653,1.39005,1.63079,1.26185,2.91456,1.90084,4.24317,3.40812,3.42703,-0.76404,1.34809,0.78704,-0.38953,-0.79747,0.51208,-1.17694,1.52712,-0.39354,-0.89872,2.09593,-1.7618,-0.06743,-2.20216,-3.58397,-3.37044,-1.85222,-3.44721,-4.61051,-4.01807,-2.28127,-0.73118,-2.40198,-3.576,-0.66252,-0.4421,-0.82163,-2.92861,-3.2789,-0.48124,2.32365,-2.83743,-2.37364,-2.13841,1.19524,3.23419,-1.92955,0.60119,-1.29483,1.84718,0.40598,0.89368,-1.0915,-2.94264,0.22082,1.50274,0.28135,0.46378,0.62274,0.84872,-1.19746,0.17385,1.12584,1.75935,1.81718],
+    [-0.24512,1.92141,-1.22791,-0.41417,-0.60932,1.86801,-0.5253,0.43605,0.52526,1.5687,-1.53482,0.15794,2.51393,0.82466,-0.48534,-0.7714,-0.5026,2.23829,-2.99617,-4.51601,-1.71183,-1.66786,-2.46463,-0.85872,-1.09854,-2.28179,0.30371,1.52979,0.8936,-0.25335,0.88323,1.83246,0.24394,0.78581,-0.18667,-0.39449,1.50256,1.00821,-1.28745,-0.32913,-0.89561,0.20938,-2.76001,-0.36289,0.57203,0.14808,0.28894,-0.18461,-0.74823,2.42222,0.86272,-2.36257,1.60856,2.18934,-3.43773,-1.97003,-1.39578,0.6411,1.4395,-1.1251,0.85401,1.49988,1.97604,0.18889],
+    [-1.0207,0.84459,0.24922,-0.75849,-0.00621,0.83401,1.43174,0.41479,-1.40387,1.4394,-2.6299,-2.00025,1.0902,-0.71828,-1.8224,-0.80558,-0.00118,-0.77164,0.23124,0.70644,0.7265,0.06479,-0.39357,-0.05987,1.90844,2.55228,2.09403,1.42239,3.28667,1.18822,1.60383,2.5198,-1.26218,-1.20697,0.44072,0.02454,0.21464,-0.78524,-0.6232,-0.37249,-2.80142,-3.74349,-3.91945,-1.17932,-0.2388,-0.17239,0.6685,-0.35443,0.76079,-0.02682,2.53173,-0.45059,0.82993,1.2561,-0.67783,0.82659,-2.19002,0.52315,0.62336,0.21961,0.47507,1.50718,-0.32109,0.1405],
+    [-2.4992,-1.90917,0.11117,0.47952,-3.10743,1.67746,-2.17817,0.0799,-2.8649,-1.84826,0.48776,1.88523,-0.95236,-0.88801,1.60344,0.77543,-2.94878,0.4068,0.98682,1.96183,-3.68226,-1.2455,-0.84298,-0.04596,4.56765,0.41644,-0.56174,-0.6607,5.4287,2.30723,0.16368,-0.33362,1.99687,-0.39562,-1.721,1.32759,-0.60182,2.95342,2.312,-1.00745,-1.49548,3.39766,2.51698,-0.76487,-0.21396,1.40792,1.55819,-1.37799,3.05194,1.60336,-0.5633,1.47554,-0.09315,0.96814,-0.47605,1.75735,-0.88721,-0.3832,-2.16868,1.20293,0.30577,-1.60999,-1.08802,0.45049],
+    [-0.09505,1.75048,1.52726,-0.26134,2.55054,1.42939,-0.01016,-1.13644,1.01494,0.46052,0.2934,-1.76769,-2.35462,1.14618,0.9225,-1.52604,-0.58351,-0.03815,1.72826,-0.63835,3.82702,0.68075,0.1946,-0.74275,1.487,-1.49363,-2.93023,-2.3412,-0.77277,-0.84661,-0.73522,-0.3038,-1.26837,-0.05507,0.76646,-0.42274,-1.75025,-2.64003,-2.46672,-1.29191,2.20168,0.58034,0.86415,-0.90719,-0.47991,1.51596,1.30436,-1.9759,-2.9598,1.33195,1.1036,-0.35222,1.24101,0.78625,1.14015,-0.33195,1.06561,-0.74832,-0.00005,-1.09444,-3.01583,-2.03524,0.62654,0.44858],
+    [3.93865,-5.85657,-4.22078,-3.97985,-0.23581,-1.71845,-3.46092,-3.08076,-3.03837,-3.80413,2.81008,3.44211,-2.14606,1.34573,0.72142,2.88967,1.60795,-1.81838,-0.45231,1.91413,-1.69291,-1.0009,1.19729,2.69603,3.9222,2.01596,2.10379,3.91349,1.73221,0.75129,-0.59015,-0.553,4.18324,0.30011,-0.28327,-1.92814,2.71356,2.21745,-0.95425,1.03694,2.27059,1.49221,1.92912,0.9533,-4.25701,-1.42047,-1.45532,1.0913,-2.78999,-3.4216,-0.46072,0.38982,-0.14651,-3.0046,0.16688,0.53834,1.87986,-1.37738,3.26525,1.78621,1.5975,1.46585,-2.01405,0.14648],
+    [2.0716,0.38455,-3.29384,-2.6987,1.9601,-3.25353,-4.24565,-0.78606,3.10843,-0.30005,2.36547,2.43176,-0.46329,-0.03111,-2.16504,1.3722,-1.0874,0.98211,1.08261,-5.37203,2.46972,0.48814,4.07421,4.69671,-5.4018,1.82208,2.83369,3.50926,-3.67318,-0.89775,1.01514,0.03852,-0.46489,-1.1389,-0.06628,-1.32222,-3.80782,-0.69114,1.82078,-0.66128,1.56969,-2.1383,1.30841,0.85231,1.03602,-0.10425,-0.55067,2.50517,1.91751,1.62893,-3.49275,-0.66259,-0.26982,-4.21098,0.77574,-3.1347,-1.54215,-0.05275,1.93326,1.87787,0.97031,1.30252,-2.16579,-2.16117],
+    [-0.65577,0.30193,0.23126,-0.27859,-1.95274,0.01812,0.42687,-0.73963,0.08509,1.17478,-1.06542,-1.27837,1.9496,2.16425,0.39496,-1.03671,-0.52581,1.24296,1.08288,2.16562,1.14768,2.00548,-2.44438,-3.13912,0.55325,-0.89059,-2.6391,-0.76131,0.52029,0.05579,-1.39388,-0.11895,1.1987,0.67023,-0.73955,-0.51091,0.60634,1.00796,-0.34229,-0.0288,-0.83879,-1.29301,-2.44603,-1.16979,0.62994,-1.13368,-3.78277,-1.40327,-1.46888,-0.88643,1.30326,2.31043,-1.54111,1.86736,2.67607,1.06064,0.96861,1.20997,-0.3092,-0.53705,0.0447,1.42801,-2.54654,-1.96427],
+    [-4.01503,0.77145,4.83421,3.93623,-2.79612,-3.31001,-3.63947,-0.6827,2.09238,2.81563,-0.00224,-0.85493,1.71384,-1.57089,0.06187,0.76063,1.34423,0.21974,0.83026,2.16032,0.85475,-1.46774,-0.84719,-1.1282,-2.48613,-1.83418,0.77408,0.21802,-2.53495,0.14832,0.26344,-0.10598,2.28877,0.47536,-0.20836,1.47175,1.59495,0.84877,1.54548,1.08542,-1.23931,2.78733,6.17537,-0.4786,2.44136,0.01302,-3.33323,-0.00277,-0.76799,-0.59475,-0.45408,-0.17685,1.52303,-0.76862,1.23019,0.99802,2.05291,0.05322,-2.68336,-0.39066,-1.26038,-2.57773,1.41388,0.99772],
+    [1.02159,0.42807,0.12949,2.75816,1.29357,0.55978,7.94323,2.0545,-2.95883,-0.72665,-2.07561,-2.73567,-0.94792,-1.47335,0.28339,-0.45851,1.19277,-2.06232,-1.58771,-0.45348,-0.15366,2.22283,3.69933,2.18249,-0.11517,1.50975,1.46787,-2.19158,-0.85294,-0.20969,-0.51108,-0.55907,-3.33825,1.17913,2.43467,2.59545,2.44911,-0.60366,0.48505,-0.74102,4.03357,1.03549,-1.54999,1.86857,-2.69748,1.69634,4.69964,3.01984,1.20921,-2.4674,-1.7219,0.89081,-0.23515,0.69879,-2.91665,-0.02889,-0.41382,-0.50944,-2.99222,-0.7648,-0.09134,-2.136,2.36476,-0.05014]
+  ];
+  const B0 = [-0.45078,1.22351,0.03863,-0.56805,0.41348,-0.99088,0.01766,0.90995,-1.00267,0.40915];
+  const rng = NN.mulberry32(9908);
+  const model = { W: W0.map(function(a){ return Float64Array.from(a); }), b: Float64Array.from(B0) };
+
+  function logits(f){
+    const z = new Float64Array(10);
+    for(let j=0; j<10; j++){
+      let s = model.b[j];
+      const w = model.W[j];
+      for(let i=0; i<64; i++) s += w[i] * f[i];
+      z[j] = s;
+    }
+    return z;
+  }
+  function probs(f){
+    return NN.softmax(Array.from(logits(f)));
+  }
+  function trainOne(f, y, lr){
+    const p = probs(f);
+    for(let j=0; j<10; j++){
+      const g = p[j] - (j === y ? 1 : 0);
+      if(Math.abs(g) < 1e-12) continue;
+      const w = model.W[j];
+      for(let i=0; i<64; i++) w[i] -= lr * g * f[i];
+      model.b[j] -= lr * g;
+    }
+  }
+  function shuffle(a){
+    for(let i=a.length-1; i>0; i--){
+      const j = Math.floor(rng()*(i+1));
+      const t = a[i]; a[i] = a[j]; a[j] = t;
+    }
+  }
+  function accuracy(){
+    let ok = 0;
+    for(let i=0; i<testSet.length; i++){
+      const p = probs(testSet[i].f);
+      let bi = 0;
+      for(let j=1; j<10; j++) if(p[j] > p[bi]) bi = j;
+      if(bi === testSet[i].y) ok++;
+    }
+    return ok / testSet.length;
+  }
+
+
+  let grid = parseDigit(T[3]);
+  let painting = false, erasing = false;
+  let inGeom = { cell:30, ox:0, oy:0, w:300 };
+  let dragR = -1, dragC = -1;
+  let training = false;
+  let trainDone = 0, trainTotal = 1;
+  let sessionTicker = null;
+
+  function drawInput(){
+    const fit = NN.fitCanvas(cvIn, 300);
+    const ctx = fit.ctx, w = fit.w, h = fit.h;
+    ctx.clearRect(0,0,w,h);
+    const n = 8;
+    const top = 14;
+    const cell = Math.min(w, h - top) / n;
+    const ox = (w - cell*n)/2, oy = top + (h - top - cell*n)/2;
+    inGeom = { cell:cell, ox:ox, oy:oy, w:w };
+    for(let r=0; r<n; r++) for(let c=0; c<n; c++){
+      const x = ox + c*cell, y = oy + r*cell;
+      ctx.fillStyle = grid[r][c] ? NN.token('--accent','#1F4FD1') : NN.token('--surface','#fff');
+      ctx.fillRect(x+0.5, y+0.5, cell-1, cell-1);
+      ctx.strokeStyle = NN.token('--line','#cbd7e3');
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x+0.5, y+0.5, cell-1, cell-1);
+    }
+    ctx.fillStyle = NN.token('--muted','#68798c');
+    ctx.font = '10px "JetBrains Mono", monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('输入 8×8', ox+2, oy-5);
+  }
+
+  function drawFeature(){
+    const maps = mapsOf(grid);
+    const fit = NN.fitCanvas(cvFeat, 150);
+    const ctx = fit.ctx, w = fit.w, h = fit.h;
+    ctx.clearRect(0,0,w,h);
+    const n = maps.length, gap = 8, labelH = 22;
+    const mapW = (w - gap*(n-1)) / n;
+    const cell = Math.max(4, Math.floor(Math.min(mapW/8, (h-labelH-8)/8)));
+    const drawW = cell*8;
+    const totalW = n*drawW + (n-1)*gap;
+    const x0 = (w - totalW)/2;
+    const lo = NN.token('--seq-lo','#eaf2fc'), hi = NN.token('--seq-hi','#0d366b');
+    ctx.textAlign = 'center';
+    ctx.font = '10px "Noto Sans SC", sans-serif';
+    maps.forEach(function(m, mi){
+      let mx = 1e-9;
+      m.forEach(function(row){ row.forEach(function(v){ mx = Math.max(mx, v); }); });
+      const bx = x0 + mi*(drawW+gap);
+      ctx.fillStyle = NN.token('--ink2','#33475c');
+      ctx.fillText(KNAME[mi], bx + drawW/2, 12);
+      for(let r=0; r<8; r++) for(let c=0; c<8; c++){
+        const t = Math.sqrt(m[r][c] / mx);
+        ctx.fillStyle = NN.rgba(NN.mix(lo, hi, t), 1);
+        ctx.fillRect(bx + c*cell, labelH + r*cell, cell-0.6, cell-0.6);
+      }
+    });
+  }
+
+  function updateProb(p){
+    let best = 0;
+    for(let j=1; j<10; j++) if(p[j] > p[best]) best = j;
+    const items = Array.from(p).map(function(v, i){
+      return {
+        label:String(i),
+        value:v,
+        text:Math.round(v*100) + '%',
+        color: i === best ? '--c2' : '--c1'
+      };
+    });
+    NN.barChart(cvProb, items, { max:1, height:300 });
+    oPred.textContent = String(best);
+    oConf.textContent = NN.fmt(p[best], 3);
+  }
+
+  function updateAll(){
+    drawInput();
+    const p = probs(feat(grid));
+    updateProb(p);
+    drawFeature();
+    oAcc.textContent = NN.fmt(accuracy()*100, 1) + '%';
+  }
+
+  function paintAt(e){
+    const rect = cvIn.getBoundingClientRect();
+    const scale = inGeom.w / rect.width;
+    const x = (e.clientX - rect.left) * scale;
+    const y = (e.clientY - rect.top) * scale;
+    const c = Math.floor((x - inGeom.ox) / inGeom.cell);
+    const r = Math.floor((y - inGeom.oy) / inGeom.cell);
+    if(r<0 || r>7 || c<0 || c>7) return;
+    if(r===dragR && c===dragC) return;
+    dragR = r; dragC = c;
+    grid[r][c] = erasing ? 0 : 1;
+  }
+
+  cvIn.addEventListener('pointerdown', function(e){
+    e.preventDefault();
+    painting = true;
+    erasing = e.shiftKey || e.button === 2;
+    dragR = -1; dragC = -1;
+    try{ cvIn.setPointerCapture(e.pointerId); }catch(err){}
+    paintAt(e);
+    updateAll();
+  });
+  cvIn.addEventListener('pointermove', function(e){
+    if(!painting) return;
+    paintAt(e);
+    updateAll();
+  });
+  function endPaint(){
+    painting = false;
+    dragR = -1; dragC = -1;
+  }
+  cvIn.addEventListener('pointerup', endPaint);
+  cvIn.addEventListener('pointercancel', endPaint);
+  cvIn.addEventListener('contextmenu', function(e){ e.preventDefault(); });
+  cvIn.style.touchAction = 'none';
+
+  q('#b-08-dclear').addEventListener('click', function(){
+    grid = grid.map(function(r){ return r.map(function(){ return 0; }); });
+    updateAll();
+  });
+  q('#b-08-d3').addEventListener('click', function(){
+    grid = parseDigit(T[3]);
+    updateAll();
+  });
+  q('#b-08-d7').addEventListener('click', function(){
+    grid = parseDigit(T[7]);
+    updateAll();
+  });
+
+  btnTrain.addEventListener('click', function(){
+    if(training) return;
+    training = true;
+    trainDone = 0;
+    trainTotal = trainSet.length * 12;
+    btnTrain.disabled = true;
+    btnTrain.textContent = '训练中 0%';
+    sessionTicker = NN.createTicker(root, function(){
+      if(!training) return;
+      for(let i=0; i<80 && trainDone<trainTotal; i++){
+        const idx = trainDone % trainSet.length;
+        if(idx === 0) shuffle(trainSet);
+        const s = trainSet[idx];
+        trainOne(s.f, s.y, 0.03);
+        trainDone++;
+      }
+      btnTrain.textContent = '训练中 ' + Math.round(trainDone/trainTotal*100) + '%';
+      if(trainDone % 240 === 0) oAcc.textContent = NN.fmt(accuracy()*100, 1) + '%';
+      if(trainDone >= trainTotal){
+        training = false;
+        sessionTicker.stop();
+        btnTrain.disabled = false;
+        btnTrain.textContent = '继续训练';
+        oAcc.textContent = NN.fmt(accuracy()*100, 1) + '%';
+        NN.toast('又训练了 12 个 epoch','ok');
+      }
+    });
+    sessionTicker.start();
+  });
+
+  if(window.Theme && window.Theme.on) window.Theme.on(updateAll);
+  updateAll();
+});
+
+defineDemo('d-08-rf', function(root){
+  if(!window.NN){ setTimeout(function(){ window.DEMOS['d-08-rf'](root); }, 0); return; }
+  const q = function(s){ return root.querySelector(s); };
+  const cv = q('#cv-08-rf');
+  const sDepth = q('#s-08-rfdepth'), oDepth = q('#o-08-rfdepth');
+  const seg = q('#seg-08-rfk');
+  const oRf = q('#o-08-rf'), oParam = q('#o-08-rfparam'), oGain = q('#o-08-rfgain');
+  let depth = 3, k = 3;
+
+  function draw(){
+    const fit = NN.fitCanvas(cv, 260);
+    const ctx = fit.ctx, w = fit.w, h = fit.h;
+    ctx.clearRect(0,0,w,h);
+    const rfNow = 1 + (k-1)*depth;
+    const gridN = Math.max(15, Math.min(45, rfNow*3));
+    const cell = Math.max(3, Math.floor(Math.min((w-30)/gridN, (h-28)/gridN)));
+    const ox = (w - gridN*cell)/2;
+    const oy = (h - gridN*cell)/2 + 6;
+    ctx.strokeStyle = NN.token('--line','#cbd7e3');
+    ctx.lineWidth = 1;
+    for(let i=0; i<=gridN; i+=5){
+      ctx.beginPath();
+      ctx.moveTo(ox+i*cell, oy);
+      ctx.lineTo(ox+i*cell, oy+gridN*cell);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(ox, oy+i*cell);
+      ctx.lineTo(ox+gridN*cell, oy+i*cell);
+      ctx.stroke();
+    }
+    const cx = ox + gridN*cell/2;
+    const cy = oy + gridN*cell/2;
+    const colors = ['--c1','--c2','--c3','--c4'];
+    for(let d=depth; d>=1; d--){
+      const rf = 1 + (k-1)*d;
+      const half = rf*cell/2;
+      const cname = colors[(d-1) % colors.length];
+      const rgb = NN.hexToRgb(NN.token(cname,'#2a78d6'));
+      ctx.fillStyle = NN.rgba(rgb, 0.07);
+      ctx.fillRect(cx-half, cy-half, rf*cell, rf*cell);
+      ctx.strokeStyle = NN.rgba(rgb, 0.9);
+      ctx.lineWidth = d === depth ? 2 : 1;
+      ctx.strokeRect(cx-half, cy-half, rf*cell, rf*cell);
+    }
+    ctx.fillStyle = NN.token('--accent2','#C24A16');
+    ctx.fillRect(cx-cell/2, cy-cell/2, cell, cell);
+    ctx.fillStyle = NN.token('--ink2','#33475c');
+    ctx.font = '11px "Noto Sans SC", sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('中心输出点的感受野:' + rfNow + '×' + rfNow + ' 像素', ox+2, oy-8);
+
+    const params = depth * (k*k*64*64 + 64);
+    oRf.textContent = String(rfNow);
+    oParam.textContent = params.toLocaleString('en-US');
+    oGain.textContent = String(k-1);
+  }
+
+  sDepth.addEventListener('input', function(){
+    depth = parseInt(sDepth.value, 10);
+    oDepth.textContent = String(depth);
+    draw();
+  });
+  seg.addEventListener('click', function(e){
+    const b = e.target.closest('button');
+    if(!b || !b.dataset.k) return;
+    k = parseInt(b.dataset.k, 10);
+    seg.querySelectorAll('button').forEach(function(x){ x.setAttribute('aria-pressed', String(x === b)); });
+    draw();
+  });
+
+  if(window.Theme && window.Theme.on) window.Theme.on(draw);
+  draw();
+});
+</script>

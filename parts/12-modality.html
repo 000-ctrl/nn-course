@@ -1,0 +1,1048 @@
+<section class="ch" id="ch-12-modality" data-num="12" data-title="图像·文本·音频·视频">
+  <header class="ch-head">
+    <div class="ch-eyebrow"><span class="dot"></span>第 12 章 · 全景</div>
+    <h1 class="ch-title">图像·文本·音频·视频</h1>
+    <p class="ch-sub">四种模态看起来天差地别,进了网络却都变成一串 token。</p>
+    <div class="ch-rule"></div>
+  </header>
+
+  <div class="prereq"><b>读前</b><span>第 10 章的 Transformer 与自注意力;第 9 章的 token 序列与 [N, d] 张量;第 3 章的 softmax、交叉熵</span><b>可跳过</b><span>12.2、12.4 的代码块只演示 API 调用;12.4 的傅里叶公式只要知道“把一小段波形拆成频率”,逐项推导可跳过</span></div>
+
+  <p class="lead">一张照片、一句话、一段录音、一段视频,在硬盘上是四种毫不相干的字节。可一旦送进神经网络,它们都必须回答同样三个问题:原始信号怎么切成小块?每一块怎么变成一个向量?这些向量怎么排成一条序列?本章按图像、文本、音频、视频的顺序各拆一遍,再把它们拼回同一个答案。</p>
+
+  <h3><span class="h3-n">12.1</span>四种模态,四种数字形态</h3>
+  <p>先看规模。下表每一行都是一种模态(modality)的“数字形态”,不是比喻,是它在内存里真实的样子。</p>
+
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>模态 / 原始形态</th><th>规模</th><th>经典架构</th><th>代表模型</th></tr></thead>
+    <tbody>
+      <tr><td>图像 · 像素张量 [H, W, 3]</td><td>224×224×3 = 150,528 个数</td><td>CNN / ViT</td><td>ResNet-50 / ViT-B/16</td></tr>
+      <tr><td>文本 · token id 序列</td><td>16 个汉字约 9—16 个 token</td><td>Transformer</td><td>GPT-3 / Llama 3</td></tr>
+      <tr><td>音频 · 波形采样点</td><td>16 kHz 一秒 16,000 个点;log-mel 100×80</td><td>wav2vec 2.0 / Whisper</td><td>Whisper large-v2</td></tr>
+      <tr><td>视频 · 帧序列 + 时间轴</td><td>30 fps 一秒 30 帧;1080p 每帧 622 万个数</td><td>3D CNN / Video Transformer</td><td>SlowFast / TimeSformer</td></tr>
+    </tbody>
+  </table></div>
+
+  <p>这四个数字摆在一起,差距是惊人的:一张 224×224 的图有 15 万个数字,一秒 16 kHz 音频有 1.6 万个,而一帧 1080p 画面有 622 万个,一分钟 30 fps 视频有 112 亿个。如果网络对这几种输入用同一套处理方式,要么浪费,要么根本跑不动。所以下面每一节,你都会看到同一种思路的变体:先压掉人不需要的细节,再把剩下的东西切成固定大小的小块。</p>
+
+  <div class="stat-row">
+    <div class="stat"><b>150,528</b><span>一张 224×224 RGB 图的数字个数</span></div>
+    <div class="stat"><b>16,000</b><span>16 kHz 音频每秒采样点</span></div>
+    <div class="stat"><b>196</b><span>ViT 一张 224 图的 patch token 数</span></div>
+    <div class="stat"><b>352,800</b><span>一分钟视频按 8 帧/clip 的 token 数</span></div>
+  </div>
+
+  <div class="demo" id="d-12-pipe">
+    <div class="demo-bar"><span class="live">交互</span><span>四种模态的输入流水线</span><span class="sp"></span><span class="tag">切换 tab</span></div>
+    <div class="demo-body">
+      <div class="canvas-wrap"><canvas id="cv-12-pipe" height="430"></canvas></div>
+      <div class="controls">
+        <div class="seg" id="seg-12-pipe">
+          <button data-m="img" aria-pressed="true">图像</button>
+          <button data-m="txt" aria-pressed="false">文本</button>
+          <button data-m="aud" aria-pressed="false">音频</button>
+          <button data-m="vid" aria-pressed="false">视频</button>
+        </div>
+        <button class="btn sm" id="b-12-play">播放合成音频</button>
+      </div>
+    </div>
+    <div class="demo-hint">先看默认的“图像”。切换四个 tab,每一行是一站:原始数据 → 切块 → 向量化 → 张量。音频 tab 的声音由 OfflineAudioContext 现场合成,频谱里的两条亮线会随时间升高。</div>
+  </div>
+
+  <p>四个 tab 的第四站都是同一形状:一个 [序列长度, 向量维度] 的张量。记住这个形状,后面所有架构都在围绕它做文章。</p>
+
+  <h3><span class="h3-n">12.2</span>图像:像素是最直白的张量</h3>
+  <p>图像的张量(tensor)有三个轴:高、宽、通道。224×224 的 RGB 图是 224×224×3,共 150,528 个 0 到 255 的整数。训练前通常除以 255,再按数据集均值方差归一化,把它们变成均值 0、方差 1 的浮点数。PyTorch 默认把通道放在最前面,所以一批 32 张图是 [32, 3, 224, 224]。</p>
+
+  <p>CNN(convolutional neural network,卷积神经网络)不改变这个张量的基本形状,而是用很小的卷积核在上面滑。一个 3×3 的 RGB 卷积核只有 3×3×3=27 个权重加 1 个偏置;同一个核在 224×224 个位置上复用,这就是参数共享。它带来的先验是:猫的耳朵出现在左上角还是右下角,都应该被同一个检测器认出来。</p>
+
+  <p>2012 年的 AlexNet 有 8 层、约 6,000 万个参数,把 ImageNet 1,000 类的 top-5 错误率从 26.2% 降到 15.3%。它的第一层卷积核学到的是边缘和色块,最后一层才是类别。这个“从局部纹理到整体物体”的层级,是 CNN 最核心的归纳偏置(inductive bias)。</p>
+
+  <p>ViT(vision transformer)把这件事换了个做法。它不做卷积,而是把图切成固定大小的 patch(图像块)。224/16=14,于是得到 14×14=196 个 16×16 的块;每块拉直成 16×16×3=768 个数,过一个线性层变成 d<sub>model</sub> 维 token(ViT-B/16 取 768,输入和输出恰好同宽;ViT-L/14 的 patch 输入是 14²×3=588,d<sub>model</sub> 另设为 1,024)。再加上位置编码,196 个 token 一起送进 Transformer。序列长度只有 196,自注意力的 196×196 相似度矩阵完全算得动。</p>
+
+  <div class="math"><var>N</var> = (<var>H</var>/<var>p</var>) × (<var>W</var>/<var>p</var>),&nbsp;&nbsp;<var>d</var><sub>patch</sub> = <var>p</var><sup>2</sup><var>C</var>,&nbsp;&nbsp;<var>d</var><sub>model</sub> = 超参</div>
+  <p class="math-note">N 是 patch 数,d<sub>patch</sub> 是每个 patch 拉直后的输入长度(p²C),线性层把它映射到 d<sub>model</sub> 维的 token。切得越细,token 越多、每个 patch 的输入越短。224 的图、16 像素的块,N=196,d<sub>patch</sub>=16²×3=768;换成 8 像素的块,N 变成 784,d<sub>patch</sub> 只剩 8²×3=192。但 d<sub>model</sub> 是另一个超参,不随 patch 大小变:ViT-B/16 取 768,ViT-L/14 取 1,024;把代码里的 kernel 改成 8,Conv2d 的输出仍然是 768 维。</p>
+
+  <div class="code-wrap"><div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div><pre class="code"><code>import torch, torch.nn as nn
+
+# 224x224 RGB -> 14x14 = 196 个 patch,每个 768 维
+to_patch = nn.Conv2d(3, 768, kernel_size=16, stride=16)
+x = torch.randn(8, 3, 224, 224)          # 一个 batch 8 张图
+tokens = to_patch(x).flatten(2).transpose(1, 2)
+print(tokens.shape)                       # torch.Size([8, 196, 768])
+
+pos = nn.Parameter(torch.zeros(1, 196, 768))
+tokens = tokens + pos                     # 位置编码;否则打乱 patch 顺序,结果完全一样</code></pre></div>
+
+  <p>切法一变,代价立刻显现。1080p 画面是 1920×1080,按 16×16 切是 120×67.5,取整后 120×68=8,160 个 token;token 数是 224 图的 41.6 倍,注意力矩阵是 1,733 倍。这就是为什么高分辨率图像和视频模型要把 token 合并、剪枝,或者改用窗口注意力。</p>
+
+  <div class="quiz" data-id="q-12-1">
+    <p class="q">ViT 把 224×224 的图切成 16×16 的 patch,序列里有多少个图像 token(不算 class token)?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="256 是 16×16,你把 patch 的边长当成了每边 patch 的数量。正确做法是 224÷16=14,再平方。">256</button>
+      <button class="opt" data-k="B" data-ok data-why="224÷16=14,每边 14 块,14×14=196。每个 patch 拉平成 768 维,所以序列是 196 个 768 维向量。">196</button>
+      <button class="opt" data-k="C" data-why="14 只是每边的 patch 数,漏掉了另一个方向;二维图要相乘,14×14=196。">14</button>
+      <button class="opt" data-k="D" data-why="49 来自 7×7,那是把 224÷32 的结果;这里 patch 是 16 像素,不是 32 像素。">49</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">12.3</span>文本:token 是离散的符号</h3>
+  <p>第 10 章 10.6 只用一句话带过 BPE:从字节出发,反复合并高频的相邻片段。这一节把它讲完整。文本的处理从分词(tokenization)开始,模型只认整数,不认字符。BPE(byte pair encoding,字节对编码)是一种字节级的合并算法,所以又叫 byte-level BPE(字节级 BPE):先把文本按 UTF-8 写成字节,起点是 256 个可能的字节值,不是几万个汉字。常用汉字在 UTF-8 里占 3 个字节,“神”一开始是 3 个整数;这样任何字符串都表示得出来,不会出现词表外的字符(out-of-vocabulary,OOV)。</p>
+
+  <p>合并怎么走?每轮统计语料里相邻两个 token 一起出现的次数,把最高的一对粘成新 token,写进词表;重复几万轮,词表就从 256 长到几万。举个小例子:语料里 low 出现 5 次、lower 出现 2 次、lowest 出现 2 次,先全部拆成字节。第一轮 (l,o) 出现 9 次,(o,w) 也出现 9 次,并列最高;实现里按固定顺序打破平局,这里假设先选 l+o,合成 lo。第二轮 lo+w 出现 9 次,合成 low。此后 low 在三个词里都是一个 token,lower 只剩 low+e+r。</p>
+
+  <div class="math"><var>(a,b)</var> = argmax<sub>(<var>a</var>,<var>b</var>)</sub> count(<var>a</var>,<var>b</var>)</div>
+  <p class="math-note">每轮在语料的所有相邻对里,选出出现次数最多的那一对 (a,b),合并成一个新 token。count 是这一对在全部字节序列里相邻出现的次数。</p>
+
+  <p>训练结束后留下的是有序的合并规则,不是统计表。编码新句子时,同样先转成字节,再按学到的顺序逐条套用合并规则——顺序不能乱,先学的规则优先级高。GPT-2 的词表 50,257 = 256 个字节 + 50,000 条合并 + 1 个文本结束符;Llama 3 的词表是 128,256。词表越大,常见片段越少被拆开,同样一句话的 token 数越少,但输出层的矩阵也越大。</p>
+
+  <p>分词结果直接决定成本。英文平均一个 token 约 4 个字符,1,000 个单词的文章大约 1,300 个 token;中文常用词经常被切成 1 到 3 个 token,30 个汉字可能是 30 到 45 个 token。上下文长度 8,192 的意思不是 8,192 个汉字,而是 8,192 个 token。</p>
+
+  <p>每个 token id 去查一张 embedding(嵌入)表。表是 [词表大小, d_model] 的矩阵,一行就是一个 token 的向量。GPT-3 的 d_model=12,288、词表 50,257,光这张表就有 50,257×12,288=617,558,016 个参数,约 6.18 亿;模型总共 1,750 亿参数,嵌入只占 0.35%。</p>
+
+  <p>然后就是 Transformer:每个位置的向量经过多层自注意力(self-attention),和序列里其他位置交换信息。训练目标是预测下一个 token,损失是 50,257 类上的交叉熵。文本最特殊的地方在于它是离散的:像素加 1 还是像素,采样点加 1 还是声音,但 token id 加 1 可能从“猫”跳到“汽车”。所以文本必须先查表变成连续向量,梯度才能定义。</p>
+
+  <div class="math"><var>P</var>(<var>x</var><sub>t</sub> | <var>x</var><sub>&lt;t</sub>) = softmax(<var>W h</var><sub>t</sub>)</div>
+  <p class="math-note">给定前 t−1 个 token 的隐藏状态 h,用一个 [词表大小, d] 的矩阵算出每个候选 token 的分数,softmax 变成概率。训练时最大化正确 token 的概率,推理时按这个分布采样。</p>
+
+  <h3><span class="h3-n">12.4</span>音频:一秒一万六千个点</h3>
+  <p>声音是空气压强随时间的连续变化。模数转换器每秒钟量 16,000 次,每次存一个 -1 到 1 的浮点数,这就是 16 kHz 采样。一秒 16,000 个数,一分钟 96 万个;音乐常用的 44.1 kHz 一分钟是 264.6 万个。</p>
+
+  <p>直接把波形喂给网络有两个困难。第一是长度:16,000 个点,就算第一层把长度减半,也要 14 层才能把感受野做到 1 秒。第二是相位:人耳对相位差不敏感,两个相位不同的波形听起来可以一样,但逐点相减差别巨大;网络却要为这些听不出来的差异浪费容量。</p>
+
+  <p>所以大多数音频模型先做 STFT(short-time Fourier transform,短时傅里叶变换):每 25 毫秒取 400 个采样点,乘窗,做快速傅里叶变换(FFT),得到这一小段的频率成分;窗每 10 毫秒滑动一次,也就是每秒 100 帧。再把频率轴按梅尔刻度(mel scale)压成 80 个 bin,取对数,得到 log-mel 频谱。一秒语音从 16,000 个数变成 100×80=8,000 个数,而且每一列直接告诉你“这 10 毫秒里有哪些频率、各有多响”。</p>
+
+  <div class="math"><var>X</var>(<var>m</var>,<var>k</var>) = Σ<sub>n=0</sub><sup>N−1</sup> <var>x</var>(<var>n</var>+<var>mH</var>) <var>w</var>(<var>n</var>) e<sup>−i2π<var>kn</var>/<var>N</var></sup></div>
+  <p class="math-note">先认符号:Σ 是求和,e 是自然常数,i 是虚数单位,π 是圆周率,e<sup>−i2πkn/N</sup> 是第 k 个频率的旋转因子。m 是第几帧,H 是帧移(这里 160 个采样点,即 10 毫秒),k 是频率编号。每个 m 做一次 FFT,就得到一列频谱;把所有列并排,就是语谱图。梅尔刻度用 m = 2595·log10(1+f/700) 把线性频率压成更接近人耳的非线性刻度。</p>
+
+  <div class="code-wrap"><div class="code-bar">python<span class="sp"></span><button class="code-btn">复制</button></div><pre class="code"><code>import torch, torchaudio
+
+wav, sr = torchaudio.load("speech.wav")   # 1 秒,16 kHz,形状 [1, 16000]
+mel = torchaudio.transforms.MelSpectrogram(
+    sample_rate=16000, n_fft=400, hop_length=160, n_mels=80
+)(wav)
+logmel = torch.log(mel + 1e-6)
+print(logmel.shape)                       # [1, 80, 101],约 100 帧/秒</code></pre></div>
+
+  <p>具体到模型:Whisper 的编码器吃 30 秒音频,先算 80 通道 log-mel,得到 3,000 帧;前端两层卷积把步长降 2,变成 1,500 个位置,再进 Transformer。wav2vec 2.0 反过来直接吃原始波形,用 7 层卷积把 16,000 Hz 降到 50 帧/秒,再对量化后的离散单元做对比学习,不需要文字标注。TTS(text-to-speech,语音合成)则倒着走:Tacotron 2 从文字预测 80 维 mel 帧,再用 WaveNet 声码器(vocoder)把 mel 还原成 24 kHz 波形;VITS 把两步合成一个网络。</p>
+
+  <p>更新的做法把音频也离散化。神经音频编解码器(neural audio codec)把 24 kHz 波形压成每秒 75 帧、每帧 8 个码本(码本是一张固定向量表,codebook),合计约 600 个 token/秒:EnCodec 在 6 kbps 下正是 8 个码本、每秒 75 帧,每个码本 1,024 项,8×75×10 bit≈6,000 bit/s。这样音频和文字一样,变成语言模型可以直接预测的整数序列。</p>
+
+  <div class="quiz" data-id="q-12-2">
+    <p class="q">一段 1 秒、16 kHz 的语音,直接喂原始波形和喂 80 维 log-mel 频谱,最主要的区别是什么?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="原始波形保留了全部信息(包括相位),问题不是缺信息,而是 16,000 个点太长,而且相位这类听不出来的细节也占满了输入容量。">原始波形没有声音信息,只有频谱才有</button>
+      <button class="opt" data-k="B" data-ok data-why="原始波形是 16,000 个数;log-mel 约 100×80=8,000 个数,每一列对应 10 毫秒内的频率成分,既短又结构化。">波形是 16,000 个数,log-mel 约 8,000 个数,且每列对应短时频率成分</button>
+      <button class="opt" data-k="C" data-why="STFT 丢掉了相位,只有幅度;从 log-mel 不能精确还原原始波形,声码器做的是估计而不是无损逆变换。">log-mel 是无损压缩,可以精确还原原始波形</button>
+      <button class="opt" data-k="D" data-why="Transformer 不限制输入形式;wav2vec 2.0 就直接吃原始波形,用卷积前端把长度降到 50 帧/秒。">只有频谱能进 Transformer,波形不能</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">12.5</span>视频:帧序列加一根时间轴</h3>
+  <p>视频是一叠图像加一根时间轴。30 fps 意味着一秒 30 张 1920×1080 的图;一帧 622 万个数字,一秒 1.87 亿个,一分钟 112 亿个。没有人会逐像素处理一分钟的原始视频,所以视频模型的第一步永远是抽帧和降分辨率。</p>
+
+  <p>3D CNN 把卷积核从二维扩到三维:一个 3×3×3 的核一次看 3 帧、3 行、3 列。Two-Stream 网络把 RGB 帧和光流(optical flow)分成两条路,光流显式编码相邻帧之间的运动。SlowFast 用两条采样率不同的路径:慢路径每 16 帧取 1 帧看颜色和场景,快路径每 2 帧取 1 帧看动作;在 64 帧的片段里,两条路径分别只有 4 帧和 32 帧。</p>
+
+  <p>Video Transformer 把视频切成 tubelet(时空小管)。TimeSformer 默认每 1 帧取一个 16×16 的块,拉平成 1 个 token:8 帧、每帧 14×14=196 个 patch,一共 8×196=1,568 个 token。也可以让一个 tubelet 横跨 2 帧(t=2),token 数减半到 784,代价是每个 token 要把两帧的同一位置一起编码。TimeSformer 把注意力拆成时间注意力和空间注意力两段,避免让 1,568 个 token 两两全连接;全时空注意力是 1,568²≈246 万对,分开以后,空间段每帧只在 196 个 patch 内算,时间段只在 8 个位置之间算。</p>
+
+  <div class="math"><var>N</var><sub>video</sub> = (<var>T</var>/<var>t</var>) × (<var>H</var>/<var>p</var>) × (<var>W</var>/<var>p</var>)</div>
+  <p class="math-note">t 是 tubelet 的时间跨度,p 是空间 patch 的边长。TimeSformer 默认 t=1,即每帧单独切:8 帧、每帧 14×14 个 16 像素 patch,就是 (8/1)×14×14=1,568 个 token。若把连续 2 帧拼成一个 tubelet(t=2),token 数减半,变成 784。时间轴每多一倍,序列长度就多一倍。</p>
+
+  <p>抽帧是最先被砍的预算。1 分钟 30 fps 是 1,800 帧,按 2 fps 抽只剩 120 帧,每 8 帧装一个 clip,只剩 15 个 clip;如果一帧不抽,1,800 帧要装 225 个 clip,每个 1,568 个 token,一分钟就是 352,800 个 token。这个数字比很多语言模型的上下文还长,所以长视频理解至今是工程问题,不只是模型问题。</p>
+
+  <div class="demo" id="d-12-frames">
+    <div class="demo-bar"><span class="live">交互</span><span>30 fps 如何被抽成稀疏帧</span><span class="sp"></span><span class="tag">拖动滑块</span></div>
+    <div class="demo-body">
+      <div class="canvas-wrap"><canvas id="cv-12-frames" height="390"></canvas></div>
+      <div class="controls">
+        <div class="ctl"><label for="s-12-fps">采样帧率 <output id="o-12-fps">6 fps</output></label>
+          <input id="s-12-fps" type="range" min="1" max="30" value="6" step="1"></div>
+        <button class="btn sm" id="b-12-hold">暂停</button>
+      </div>
+    </div>
+    <div class="demo-hint">上排是 30 fps 的源视频(1 秒),下排是按当前帧率抽出的帧。滑块拖到 30 时一帧不丢;拖到 1 时只剩 1 帧,但每帧仍是 64×64×3 个数,堆成的张量第一维就是帧数。</div>
+  </div>
+
+  <h3><span class="h3-n">12.6</span>多模态对齐:CLIP 把两种语言放进同一个空间</h3>
+  <p>多模态(multimodal)模型的第一道关,是把两种完全不同的输入放进同一个向量空间。图像编码器输出一个 768 维向量,文本编码器也输出一个 768 维向量。两个向量怎么判断配不配?CLIP(contrastive language-image pre-training)的答案是:让配对的靠近,不配对的远离。</p>
+
+  <p>训练数据是 4 亿个(图像, 文本)对。一个 batch 取 32,768 对,两个编码器各算出 32,768 个向量,做 L2 归一化,再算一个 32,768×32,768 的余弦相似度矩阵(余弦相似度=两向量夹角的接近程度,cosine similarity)。对角线是正确配对,其余约 10.7 亿个格子都是负样本。损失函数只做一件事:让每一行的最大值落在对角线上。</p>
+
+  <div class="math"><var>L</var> = −(1/<var>N</var>) Σ<sub>i</sub> log [ exp(sim(<var>i</var><sub>i</sub>,<var>t</var><sub>i</sub>)/<var>τ</var>) / Σ<sub>j</sub> exp(sim(<var>i</var><sub>i</sub>,<var>t</var><sub>j</sub>)/<var>τ</var>) ]</div>
+  <p class="math-note">sim 是余弦相似度,i_i 是第 i 张图的向量,t_j 是第 j 句文本的向量。分子是正确配对,分母是这一行所有配对之和。τ 是可学习的温度(temperature),CLIP 初始化成 0.07;τ 越小,softmax 越尖锐,模型越只盯最像的那一个。</p>
+
+  <p>这个目标叫对比学习(contrastive learning),损失函数叫 InfoNCE。它不需要给图像打 1,000 类标签,也不需要生成描述,只需要“这一对是真的,其他都是假的”。正因为监督信号是相对的,CLIP 才能把任意一句描述和任意一张图放进同一个空间比较。</p>
+
+  <p>零样本(zero-shot)分类是它的直接用法:把 1,000 个类名写成“一张{类名}的照片”,编码成 1,000 个文本向量;图像向量和它们算余弦相似度,取最大的那个。ViT-L/14@336px 在 ImageNet 上零样本 top-1 达到 76.2%,训练时没有见过 ImageNet 的任何一张图。</p>
+
+  <p>后来的多模态模型大多站在这个接口上。Stable Diffusion 用 CLIP 的文本编码器把提示词变成 77 个 token;LLaVA 用一个线性层把 ViT 的 576 个图像 token 投影到语言模型的词向量空间,和文字 token 拼成一条序列,送进同一个 Transformer。SigLIP 把 softmax 换成 sigmoid,不再需要整个 batch 的全局归一化,训练更省内存。</p>
+
+  <div class="callout warn"><b>常见误解</b><p>多模态模型不是先把图像“翻译成文字”再交给语言模型。CLIP 对齐的是连续向量;LLaVA 投影的是 576 个连续图像特征。把图像写成一句描述,会丢掉 15 万个数值里的绝大多数信息。文字是对齐时的监督信号,不是推理时的中间格式。</p></div>
+
+  <div class="demo" id="d-12-clip">
+    <div class="demo-bar"><span class="live">交互</span><span>一句话如何在嵌入空间里找到图</span><span class="sp"></span><span class="tag">点选句子</span></div>
+    <div class="demo-body">
+      <div class="canvas-wrap"><canvas id="cv-12-clip" height="330"></canvas></div>
+      <div class="controls">
+        <div class="seg" id="seg-12-clip">
+          <button data-t="0" aria-pressed="true">狗在草地</button>
+          <button data-t="1" aria-pressed="false">猫在窗台</button>
+          <button data-t="2" aria-pressed="false">车停路边</button>
+          <button data-t="3" aria-pressed="false">巧克力蛋糕</button>
+        </div>
+      </div>
+    </div>
+    <div class="demo-hint">左边是 2 维投影后的图像向量(方块)和文本向量(圆圈),右边是当前句子的余弦相似度。点不同的句子,看哪张图被排到第一。真实 CLIP 是 512—1,024 维,这里只是为了画得下。</div>
+  </div>
+
+  <div class="quiz" data-id="q-12-3">
+    <p class="q">CLIP 训练时一个 batch 有 32,768 个图文对,损失函数主要在做什么?</p>
+    <div class="opts">
+      <button class="opt" data-k="A" data-why="CLIP 的图像编码器只输出向量,不生成文字;生成描述是另一类模型(如 BLIP)的任务,训练目标不同。">让图像编码器生成文字描述,再和真实文本算交叉熵</button>
+      <button class="opt" data-k="B" data-ok data-why="对每张图,在 32,768 句文本里把配对的那句挑出来;对每句文本也一样。对比损失拉近正样本、推远其余 32,767 个负样本。">把配对的那一对从 32,768 个候选里挑出来,拉近正样本、推远负样本</button>
+      <button class="opt" data-k="C" data-why="CLIP 训练时没有固定的 1,000 类标签;零样本分类是推理时把类名写成句子、现算文本向量得到的。">训练一个 1,000 类分类器,把图像分到 ImageNet 类别</button>
+      <button class="opt" data-k="D" data-why="CLIP 只有整对(图, 文)是否匹配的监督,没有像素与单词的逐点对齐,所以它做不了检测框或分割掩码。">让图像的每个像素和文本的每个词逐一对应</button>
+    </div>
+    <div class="quiz-fb"></div>
+  </div>
+
+  <h3><span class="h3-n">12.7</span>一切都在变成 token</h3>
+  <p>把四条流水线并排看,最后一步的形状完全一样:一个 [N, d] 的矩阵,外加位置信息。Transformer 不关心第 3 个 token 来自 16×16 的图像块、一个汉字、10 毫秒的音频,还是视频里的一小块时空;它对所有 token 做同一件事:让它们互相交换信息。</p>
+
+  <p>这就是“一切都在变成 token”的真正含义。图像用 patch token;矢量量化变分自编码器(VQ-VAE)进一步把每个 patch 量化成码本表里 256 个条目中的一个编号,一张 256×256 的图变成 32×32=1,024 个离散 token;音频用神经编解码器变成每秒 75 帧、每帧 8 个码本(约 600 个 token/秒);视频用 tubelet token;文本本来就是 token。模态的差异被推到了最前面的 tokenizer,后面的网络可以共享。</p>
+
+  <p>代价同样直接:token 数就是计算量。注意力是 O(N²),N 从 196 涨到 8,160,矩阵乘法涨 1,733 倍;视频一分钟 352,800 个 token,没有分块、稀疏注意力或线性注意力根本跑不动。所谓多模态大模型的工程,一大半在回答:怎么用更少的 token 保留更多的信息。</p>
+
+  <div class="callout key"><b>核心结论</b><p>模态决定 tokenizer,不决定 Transformer。拿到一个新模态,先数它的原始序列长度,再决定切多细、用什么表示,最后才是选网络结构。</p></div>
+
+  <div class="ch-foot">
+    <span class="state" data-state></span>
+    <span class="sp"></span>
+    <a class="btn" href="#ch-13-design">下一章 →</a>
+  </div>
+</section>
+
+<script>
+(function(){
+"use strict";
+const TAU = Math.PI * 2;
+
+function pal(){
+  return {
+    ink: NN.token('--ink', '#111'),
+    ink2: NN.token('--ink2', '#334'),
+    muted: NN.token('--muted', '#777'),
+    line: NN.token('--line', '#ccd'),
+    line2: NN.token('--line2', '#aab'),
+    surface: NN.token('--surface', '#fff'),
+    surface2: NN.token('--surface2', '#f4f7fa'),
+    c1: NN.token('--c1', '#2a78d6'),
+    c2: NN.token('--c2', '#eb6834'),
+    c3: NN.token('--c3', '#1baf7a'),
+    c4: NN.token('--c4', '#eda100'),
+    ok: NN.token('--ok', '#0f7a57'),
+    err: NN.token('--err', '#b62e28')
+  };
+}
+function rgbaOf(hex, a){
+  const c = NN.hexToRgb(hex);
+  return 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + a + ')';
+}
+function rrect(ctx, x, y, w, h, r){
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+function txt(ctx, s, x, y, color, font, align){
+  ctx.fillStyle = color;
+  ctx.font = font || '11px "Noto Sans SC", system-ui, sans-serif';
+  ctx.textAlign = align || 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(s, x, y);
+}
+function arrow(ctx, x1, y1, x2, y2, color, lw){
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = lw || 1.2;
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+  const a = Math.atan2(y2 - y1, x2 - x1), s = 4;
+  ctx.beginPath();
+  ctx.moveTo(x2, y2);
+  ctx.lineTo(x2 - s * Math.cos(a - 0.45), y2 - s * Math.sin(a - 0.45));
+  ctx.lineTo(x2 - s * Math.cos(a + 0.45), y2 - s * Math.sin(a + 0.45));
+  ctx.closePath();
+  ctx.fill();
+}
+function cosine(a, b){
+  const na = Math.hypot(a[0], a[1]), nb = Math.hypot(b[0], b[1]);
+  return (a[0] * b[0] + a[1] * b[1]) / (na * nb);
+}
+const DEFER = {};
+function onTheme(fn){
+  if (window.NN && NN.Theme && typeof NN.Theme.on === 'function') NN.Theme.on(fn);
+  else if (window.Theme && typeof window.Theme.on === 'function') window.Theme.on(fn);
+}
+function deferDemo(id, root){
+  if (window.NN) return false;
+  DEFER[id] = (DEFER[id] || 0) + 1;
+  if (DEFER[id] > 300) return true;
+  setTimeout(function(){
+    const fn = window.DEMOS[id];
+    if (fn) fn(root);
+  }, 20);
+  return true;
+}
+
+/* ================= 演示一:模态流水线 ================= */
+defineDemo('d-12-pipe', function(root){
+  if (deferDemo('d-12-pipe', root)) return;
+  const cv = root.querySelector('#cv-12-pipe');
+  const seg = root.querySelector('#seg-12-pipe');
+  const play = root.querySelector('#b-12-play');
+  const SR = 16000, DUR = 0.6, NS = Math.round(SR * DUR);
+  const NF = 60, NB = 64, WIN = 512, HOP = 160;
+  let mode = 'img';
+  let samples = null, spec = null;
+
+  /* --- 预置一张 12x12 的合成图,以及 4x4 的 patch 平均值 --- */
+  const GX = 12, GY = 12, imgPix = [], patchAvg = [];
+  for (let r = 0; r < GY; r++){
+    imgPix.push([]);
+    for (let c = 0; c < GX; c++){
+      const t = 0.5 + 0.5 * Math.sin(c * 0.62 - r * 0.48);
+      let cr = Math.round(26 + 120 * t);
+      let cg = Math.round(74 + 90 * (1 - t));
+      let cb = Math.round(168 + 54 * t);
+      if (Math.abs(c - r * 1.1 - 3) < 1.2){ cr = 236; cg = 182; cb = 72; }
+      imgPix[r].push([cr, cg, cb]);
+    }
+  }
+  for (let pr = 0; pr < 4; pr++){
+    patchAvg.push([]);
+    for (let pc = 0; pc < 4; pc++){
+      let s0 = 0, s1 = 0, s2 = 0, n = 0;
+      for (let r = pr * 3; r < pr * 3 + 3; r++){
+        for (let c = pc * 3; c < pc * 3 + 3; c++){
+          s0 += imgPix[r][c][0]; s1 += imgPix[r][c][1]; s2 += imgPix[r][c][2]; n++;
+        }
+      }
+      patchAvg[pr].push([Math.round(s0 / n), Math.round(s1 / n), Math.round(s2 / n)]);
+    }
+  }
+
+  /* --- 文本 --- */
+  const CHARS = Array.from('神经网络把图像声音文字都变成数字');
+  const TOKENS = [
+    {s:'神经', id:8723}, {s:'网络', id:4012}, {s:'把', id:1103},
+    {s:'图像', id:6621}, {s:'声音', id:7008}, {s:'文字', id:5320},
+    {s:'都', id:216}, {s:'变成', id:9034}, {s:'数字', id:4471}
+  ];
+
+  /* --- 音频:先给一段同步生成的啁啾,再用 OfflineAudioContext 覆盖 --- */
+  function fallback(){
+    const a = new Float32Array(NS);
+    for (let i = 0; i < NS; i++){
+      const t = i / SR;
+      const env = Math.min(1, t / 0.02) * Math.min(1, (DUR - t) / 0.08);
+      const ph1 = TAU * (440 * t + 220 * t * t / DUR);
+      const ph2 = TAU * (880 * t + 440 * t * t / DUR);
+      a[i] = env * (0.55 * Math.sin(ph1) + 0.18 * Math.sin(ph2));
+    }
+    return a;
+  }
+  function fft(re, im){
+    const n = re.length;
+    for (let i = 1, j = 0; i < n; i++){
+      let bit = n >> 1;
+      for (; j & bit; bit >>= 1) j ^= bit;
+      j ^= bit;
+      if (i < j){
+        let t = re[i]; re[i] = re[j]; re[j] = t;
+        t = im[i]; im[i] = im[j]; im[j] = t;
+      }
+    }
+    for (let len = 2; len <= n; len <<= 1){
+      const ang = -TAU / len, wr = Math.cos(ang), wi = Math.sin(ang);
+      for (let i = 0; i < n; i += len){
+        let cr = 1, ci = 0;
+        for (let k = 0; k < len / 2; k++){
+          const ur = re[i + k], ui = im[i + k];
+          const vr = re[i + k + len / 2] * cr - im[i + k + len / 2] * ci;
+          const vi = re[i + k + len / 2] * ci + im[i + k + len / 2] * cr;
+          re[i + k] = ur + vr; im[i + k] = ui + vi;
+          re[i + k + len / 2] = ur - vr; im[i + k + len / 2] = ui - vi;
+          const ncr = cr * wr - ci * wi;
+          ci = cr * wi + ci * wr; cr = ncr;
+        }
+      }
+    }
+  }
+  function computeSpec(a){
+    const raw = new Float32Array(NF * NB);
+    const win = new Float32Array(WIN);
+    for (let i = 0; i < WIN; i++) win[i] = 0.5 - 0.5 * Math.cos(TAU * i / (WIN - 1));
+    let maxdb = -999;
+    for (let f = 0; f < NF; f++){
+      const re = new Float32Array(WIN), im = new Float32Array(WIN);
+      const off = f * HOP;
+      for (let i = 0; i < WIN; i++) re[i] = (a[off + i] || 0) * win[i];
+      fft(re, im);
+      for (let r = 0; r < NB; r++){
+        const freq = 80 * Math.pow(4000 / 80, r / (NB - 1));
+        let bin = Math.round(freq / (SR / WIN));
+        bin = Math.max(1, Math.min(WIN / 2 - 1, bin));
+        const mag = Math.sqrt(re[bin] * re[bin] + im[bin] * im[bin]);
+        const db = 20 * Math.log10(mag + 1e-9);
+        raw[f * NB + r] = db;
+        if (db > maxdb) maxdb = db;
+      }
+    }
+    const out = new Float32Array(NF * NB);
+    for (let i = 0; i < out.length; i++) out[i] = Math.max(0, Math.min(1, (raw[i] - (maxdb - 55)) / 55));
+    return out;
+  }
+  samples = fallback();
+  spec = computeSpec(samples);
+
+  function drawImgRaw(ctx, x, y, w, h, P){
+    const n = 12, gap = 8;
+    const cell = Math.min((w - gap * 2) / 3 / n, (h - 16) / n);
+    const total = n * cell * 3 + gap * 2;
+    const x0 = x + (w - total) / 2, y0 = y + 1;
+    for (let p = 0; p < 3; p++){
+      for (let r = 0; r < n; r++){
+        for (let c = 0; c < n; c++){
+          const v = imgPix[r][c][p];
+          const col = [26, 26, 26];
+          col[p] = v;
+          ctx.fillStyle = 'rgb(' + col[0] + ',' + col[1] + ',' + col[2] + ')';
+          ctx.fillRect(x0 + p * (n * cell + gap) + c * cell, y0 + r * cell, cell - 0.4, cell - 0.4);
+        }
+      }
+      txt(ctx, 'RGB'[p], x0 + p * (n * cell + gap) + n * cell / 2, y0 + n * cell + 9, P.muted, '9px "JetBrains Mono",monospace', 'center');
+    }
+  }
+  function drawImgPatch(ctx, x, y, w, h, P){
+    const n = 12;
+    const cell = Math.min((h - 8) / n, (w * 0.56) / n);
+    const x0 = x + 2, y0 = y + (h - n * cell) / 2;
+    for (let r = 0; r < n; r++){
+      for (let c = 0; c < n; c++){
+        const q = imgPix[r][c];
+        ctx.fillStyle = 'rgb(' + q[0] + ',' + q[1] + ',' + q[2] + ')';
+        ctx.fillRect(x0 + c * cell, y0 + r * cell, cell - 0.3, cell - 0.3);
+      }
+    }
+    ctx.strokeStyle = rgbaOf(P.surface, 0.9);
+    ctx.lineWidth = 1;
+    for (let i = 1; i < 4; i++){
+      ctx.beginPath(); ctx.moveTo(x0 + i * 3 * cell, y0); ctx.lineTo(x0 + i * 3 * cell, y0 + n * cell); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x0, y0 + i * 3 * cell); ctx.lineTo(x0 + n * cell, y0 + i * 3 * cell); ctx.stroke();
+    }
+    ctx.strokeStyle = P.c2;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x0 + 2 * 3 * cell - 1, y0 + 1 * 3 * cell - 1, 3 * cell + 2, 3 * cell + 2);
+    const tx = x0 + n * cell + 14;
+    txt(ctx, '4 × 4', tx, y + h / 2 - 11, P.c2, '11px "JetBrains Mono",monospace');
+    txt(ctx, '16 块', tx, y + h / 2 + 5, P.ink, '11px "Noto Sans SC",system-ui,sans-serif');
+    txt(ctx, '每块 16×16', tx, y + h / 2 + 21, P.muted, '9px "Noto Sans SC",system-ui,sans-serif');
+  }
+  function drawImgEmbed(ctx, x, y, w, h, P){
+    const gap = 2;
+    const ps = Math.min(15, (h - 22 - 3 * gap) / 4);
+    const x0 = x + 2, y0 = y + 14;
+    for (let pr = 0; pr < 4; pr++){
+      for (let pc = 0; pc < 4; pc++){
+        const q = patchAvg[pr][pc];
+        ctx.fillStyle = 'rgb(' + q[0] + ',' + q[1] + ',' + q[2] + ')';
+        ctx.fillRect(x0 + pc * (ps + gap), y0 + pr * (ps + gap), ps, ps);
+        ctx.strokeStyle = rgbaOf(P.surface, 0.7);
+        ctx.lineWidth = 0.8;
+        ctx.strokeRect(x0 + pc * (ps + gap), y0 + pr * (ps + gap), ps, ps);
+      }
+    }
+    ctx.strokeStyle = P.c2; ctx.lineWidth = 2;
+    ctx.strokeRect(x0 + 2 * (ps + gap) - 1, y0 + 1 * (ps + gap) - 1, ps + 2, ps + 2);
+    arrow(ctx, x0 + 4 * ps + 3 * gap + 4, y + h / 2, x0 + 4 * ps + 3 * gap + 22, y + h / 2, P.line2, 1.2);
+    const vx = x0 + 4 * ps + 3 * gap + 28;
+    const vw = Math.max(40, w - (vx - x));
+    for (let r = 0; r < 4; r++){
+      for (let c = 0; c < 12; c++){
+        const v = 0.5 + 0.5 * Math.sin(c * 1.7 + r * 2.3 + patchAvg[1][2][0] * 0.01);
+        const cc = NN.mix(P.surface2, P.c1, 0.12 + 0.88 * v);
+        ctx.fillStyle = 'rgb(' + cc[0] + ',' + cc[1] + ',' + cc[2] + ')';
+        ctx.fillRect(vx + c * vw / 12, y0 + r * (ps + gap), vw / 12 - 0.4, ps);
+      }
+    }
+    txt(ctx, '线性层 → 768 维', x + w - 4, y + 6, P.muted, '8.5px "Noto Sans SC",system-ui,sans-serif', 'right');
+  }
+  function drawImgTensor(ctx, x, y, w, h, P){
+    const n = 14;
+    const cell = Math.min(4.1, (h - 16) / n);
+    const x0 = x + 2, y0 = y + 1;
+    for (let k = 2; k >= 0; k--){
+      ctx.globalAlpha = k === 0 ? 1 : 0.16;
+      for (let r = 0; r < n; r++){
+        for (let c = 0; c < n; c++){
+          const pr = Math.min(3, Math.floor(r * 4 / n)), pc = Math.min(3, Math.floor(c * 4 / n));
+          const q = patchAvg[pr][pc];
+          const lum = (q[0] * 0.3 + q[1] * 0.5 + q[2] * 0.2) / 255;
+          const cc = NN.mix(P.surface2, P.c1, 0.15 + 0.85 * lum);
+          ctx.fillStyle = 'rgb(' + cc[0] + ',' + cc[1] + ',' + cc[2] + ')';
+          ctx.fillRect(x0 + k * 3 + c * cell, y0 + k * 3 + r * cell, cell - 0.3, cell - 0.3);
+        }
+      }
+    }
+    ctx.globalAlpha = 1;
+    const tx = x0 + n * cell + 18;
+    txt(ctx, '[196, 768]', tx, y + h / 2 - 8, P.ink, '11px "JetBrains Mono",monospace');
+    txt(ctx, '196 个 token', tx, y + h / 2 + 8, P.muted, '9px "Noto Sans SC",system-ui,sans-serif');
+    txt(ctx, '每个 768 维', tx, y + h / 2 + 23, P.muted, '9px "Noto Sans SC",system-ui,sans-serif');
+  }
+
+  function drawTxtRaw(ctx, x, y, w, h, P){
+    const bw = 14, bh = 22, gap = 2;
+    const x0 = x + 2, y0 = y + (h - (2 * bh + gap)) / 2;
+    for (let i = 0; i < CHARS.length; i++){
+      const r = Math.floor(i / 8), c = i % 8;
+      const bx = x0 + c * (bw + gap), by = y0 + r * (bh + gap);
+      ctx.fillStyle = rgbaOf(P.surface, 0.9);
+      rrect(ctx, bx, by, bw, bh, 2); ctx.fill();
+      ctx.strokeStyle = rgbaOf(P.line2, 0.8); ctx.lineWidth = 0.7; ctx.stroke();
+      txt(ctx, CHARS[i], bx + bw / 2, by + bh / 2, P.ink, '10px "Noto Sans SC",system-ui,sans-serif', 'center');
+    }
+    txt(ctx, '16 个字 = 48 个 UTF-8 字节', x + 2, y + h - 6, P.muted, '9px "Noto Sans SC",system-ui,sans-serif');
+  }
+  function drawTxtTokens(ctx, x, y, w, h, P){
+    const bh = 26, gap = 3;
+    const chars = 16, n = TOKENS.length;
+    const cw = Math.min(13, (w - 4 - gap * (n - 1)) / chars);
+    const fs = Math.max(7, Math.min(10, cw * 0.9));
+    let cx = x + 2;
+    const y0 = y + (h - bh) / 2 - 6;
+    for (let i = 0; i < n; i++){
+      const t = TOKENS[i], bw = t.s.length * cw;
+      ctx.fillStyle = rgbaOf(P.c1, 0.10);
+      rrect(ctx, cx, y0, bw, bh, 3); ctx.fill();
+      ctx.strokeStyle = rgbaOf(P.c1, 0.55); ctx.lineWidth = 0.8; ctx.stroke();
+      txt(ctx, t.s, cx + bw / 2, y0 + bh / 2, P.ink, fs + 'px "Noto Sans SC",system-ui,sans-serif', 'center');
+      cx += bw + gap;
+    }
+    txt(ctx, 'BPE 把 48 个字节合成 9 个 token', x + 2, y + h - 6, P.muted, '9px "Noto Sans SC",system-ui,sans-serif');
+  }
+  function drawTxtEmbed(ctx, x, y, w, h, P){
+    const bx = x + 2, by = y + h / 2 - 14;
+    ctx.fillStyle = rgbaOf(P.c1, 0.10);
+    rrect(ctx, bx, by, 50, 28, 3); ctx.fill();
+    ctx.strokeStyle = P.c1; ctx.lineWidth = 0.8; ctx.stroke();
+    txt(ctx, '图像', bx + 25, by + 9, P.ink, '10px "Noto Sans SC",system-ui,sans-serif', 'center');
+    txt(ctx, '6621', bx + 25, by + 21, P.muted, '8px "JetBrains Mono",monospace', 'center');
+    arrow(ctx, bx + 55, y + h / 2, bx + 76, y + h / 2, P.line2, 1.2);
+    const vx = bx + 82, vw = Math.max(40, w - 90);
+    const bars = 16, bw = vw / bars;
+    for (let i = 0; i < bars; i++){
+      const v = 0.5 + 0.5 * Math.sin(i * 1.7 + 2.1);
+      const bh = 8 + v * (h - 26);
+      ctx.fillStyle = rgbaOf(P.c1, 0.35 + 0.55 * v);
+      ctx.fillRect(vx + i * bw, y + h - 8 - bh, Math.max(2, bw - 2), bh);
+    }
+    txt(ctx, '1 行 → 4096 维向量', vx, y + 8, P.muted, '9px "Noto Sans SC",system-ui,sans-serif');
+  }
+  function drawTxtTensor(ctx, x, y, w, h, P){
+    const rows = 9, cols = 16, ch = 6;
+    const cw = Math.max(3, Math.min(7, (w - 96) / cols));
+    const x0 = x + 2, y0 = y + (h - rows * ch) / 2;
+    for (let r = 0; r < rows; r++){
+      for (let c = 0; c < cols; c++){
+        const v = 0.5 + 0.5 * Math.sin(r * 1.3 + c * 0.9 + 2);
+        const cc = NN.mix(P.surface2, P.c1, 0.15 + 0.85 * v);
+        ctx.fillStyle = 'rgb(' + cc[0] + ',' + cc[1] + ',' + cc[2] + ')';
+        ctx.fillRect(x0 + c * cw, y0 + r * ch, cw - 0.4, ch - 0.4);
+      }
+    }
+    const tx = x0 + cols * cw + 10;
+    txt(ctx, '[9, 4096]', tx, y + h / 2 - 8, P.ink, '11px "JetBrains Mono",monospace');
+    txt(ctx, '9 个 token', tx, y + h / 2 + 8, P.muted, '8.5px "Noto Sans SC",system-ui,sans-serif');
+    txt(ctx, '每个 4096 维', tx, y + h / 2 + 23, P.muted, '8.5px "Noto Sans SC",system-ui,sans-serif');
+  }
+
+  function drawAudioWave(ctx, x, y, w, h, P){
+    const cols = Math.max(40, Math.floor(w));
+    const per = NS / cols;
+    const mid = y + h / 2, amp = h * 0.42;
+    ctx.strokeStyle = rgbaOf(P.line2, 0.7); ctx.lineWidth = 0.8;
+    ctx.beginPath(); ctx.moveTo(x, mid); ctx.lineTo(x + w, mid); ctx.stroke();
+    ctx.strokeStyle = P.c1; ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 0; i < cols; i++){
+      let mn = 1, mx = -1;
+      const a0 = Math.floor(i * per), a1 = Math.min(NS, Math.floor((i + 1) * per));
+      for (let k = a0; k < a1; k++){ const v = samples[k]; if (v < mn) mn = v; if (v > mx) mx = v; }
+      const px = x + i * w / cols;
+      ctx.moveTo(px, mid - mx * amp);
+      ctx.lineTo(px, mid - mn * amp);
+    }
+    ctx.stroke();
+    txt(ctx, '0.6 秒 = 9,600 个采样点', x + 2, y + 4, P.muted, '9px "JetBrains Mono",monospace');
+  }
+  function drawAudioSpec(ctx, x, y, w, h, P){
+    const sw = Math.min(w - 4, 236), sh = h - 2;
+    const x0 = x + 2, y0 = y + 1;
+    const cw = sw / NF, ch = sh / NB;
+    for (let f = 0; f < NF; f++){
+      for (let r = 0; r < NB; r++){
+        const v = spec[f * NB + r];
+        const cc = NN.mix(P.surface2, P.c2, v);
+        ctx.fillStyle = 'rgb(' + cc[0] + ',' + cc[1] + ',' + cc[2] + ')';
+        ctx.fillRect(x0 + f * cw, y0 + sh - (r + 1) * ch, cw + 0.4, ch + 0.4);
+      }
+    }
+    ctx.strokeStyle = rgbaOf(P.line2, 0.9); ctx.lineWidth = 1;
+    ctx.strokeRect(x0, y0, sw, sh);
+    txt(ctx, '4 kHz', x0 + sw - 2, y0 + 7, P.muted, '8px "JetBrains Mono",monospace', 'right');
+    txt(ctx, '80 Hz', x0 + sw - 2, y0 + sh - 7, P.muted, '8px "JetBrains Mono",monospace', 'right');
+  }
+  function drawAudioFrames(ctx, x, y, w, h, P){
+    const cols = 8, rows = 10, cw = 6, ch = 4.6, gap = 5;
+    const x0 = x + 2, y0 = y + (h - rows * ch) / 2;
+    for (let k = 0; k < cols; k++){
+      const f = Math.floor(k * (NF - 1) / (cols - 1));
+      for (let r = 0; r < rows; r++){
+        const v = spec[f * NB + r * 5];
+        const cc = NN.mix(P.surface2, P.c1, v);
+        ctx.fillStyle = 'rgb(' + cc[0] + ',' + cc[1] + ',' + cc[2] + ')';
+        ctx.fillRect(x0 + k * (cw + gap), y0 + rows * ch - (r + 1) * ch, cw, ch + 0.4);
+      }
+    }
+    const ax = x0 + cols * (cw + gap) + 2;
+    arrow(ctx, ax, y + h / 2, ax + 14, y + h / 2, P.line2, 1.2);
+    txt(ctx, '60 帧', ax + 18, y + h / 2 - 8, P.ink, '10px "Noto Sans SC",system-ui,sans-serif');
+    txt(ctx, '每帧 80 维', ax + 18, y + h / 2 + 8, P.muted, '8.5px "Noto Sans SC",system-ui,sans-serif');
+  }
+  function drawAudioTokens(ctx, x, y, w, h, P){
+    const cols = 10, rows = 6, labelW = 80;
+    const cell = Math.max(5, Math.min(10, (w - labelW - 20) / cols));
+    const x0 = x + 2, y0 = y + (h - rows * cell) / 2;
+    for (let k = 0; k < rows * cols; k++){
+      const f = Math.floor(k * NF / (rows * cols));
+      let e = 0;
+      for (let r = 0; r < NB; r += 8) e += spec[f * NB + r];
+      e = Math.min(1, e / 8 * 1.6 + 0.12);
+      const cc = NN.mix(P.surface2, P.c3, e);
+      ctx.fillStyle = 'rgb(' + cc[0] + ',' + cc[1] + ',' + cc[2] + ')';
+      ctx.fillRect(x0 + (k % cols) * cell, y0 + Math.floor(k / cols) * cell, cell - 1.2, cell - 1.2);
+    }
+    const tx = x0 + cols * cell + 10;
+    txt(ctx, '[60, 80]', tx, y + h / 2 - 8, P.ink, '11px "JetBrains Mono",monospace');
+    txt(ctx, '60 个时间 token', tx, y + h / 2 + 8, P.muted, '8.5px "Noto Sans SC",system-ui,sans-serif');
+  }
+
+  function drawVidRaw(ctx, x, y, w, h, P){
+    const n = 10, gap = 2;
+    const fw = Math.min(20, (w - 4 - (n - 1) * gap) / n);
+    const fh = Math.min(52, h - 8);
+    const total = n * fw + (n - 1) * gap, x0 = x + 2;
+    const y0 = y + (h - fh) / 2;
+    for (let i = 0; i < n; i++){
+      const bx = x0 + i * (fw + gap);
+      ctx.fillStyle = rgbaOf(P.surface2, 1);
+      ctx.fillRect(bx, y0, fw, fh);
+      ctx.strokeStyle = rgbaOf(P.line2, 0.8); ctx.lineWidth = 0.7;
+      ctx.strokeRect(bx, y0, fw, fh);
+      const t = i / (n - 1);
+      const bx2 = bx + fw * (0.22 + 0.56 * t);
+      const by2 = y0 + fh * (0.5 + 0.28 * Math.sin(t * TAU + 0.4));
+      ctx.beginPath(); ctx.arc(bx2, by2, 2.3, 0, TAU); ctx.fillStyle = P.c1; ctx.fill();
+    }
+  }
+  function drawVidSample(ctx, x, y, w, h, P){
+    const n = 8, gap = 3;
+    const fw = Math.min(23, (w - 4 - (n - 1) * gap) / n);
+    const fh = Math.min(52, h - 8);
+    const total = n * fw + (n - 1) * gap, x0 = x + 2;
+    const y0 = y + (h - fh) / 2;
+    for (let i = 0; i < n; i++){
+      const bx = x0 + i * (fw + gap);
+      ctx.fillStyle = rgbaOf(P.surface2, 1);
+      ctx.fillRect(bx, y0, fw, fh);
+      const t = i * 30 / n / 29;
+      const bx2 = bx + fw * (0.22 + 0.56 * t);
+      const by2 = y0 + fh * (0.5 + 0.28 * Math.sin(t * TAU + 0.4));
+      ctx.beginPath(); ctx.arc(bx2, by2, 2.5, 0, TAU); ctx.fillStyle = P.c2; ctx.fill();
+      ctx.strokeStyle = rgbaOf(P.c2, 0.8); ctx.lineWidth = 1.2;
+      ctx.strokeRect(bx, y0, fw, fh);
+    }
+  }
+  function drawVidTube(ctx, x, y, w, h, P){
+    const fw = Math.min(42, Math.max(24, w * 0.22)), fh = Math.min(52, h - 8);
+    const x0 = x + 4, y0 = y + (h - fh) / 2;
+    ctx.fillStyle = rgbaOf(P.surface2, 1);
+    ctx.fillRect(x0, y0, fw, fh);
+    ctx.strokeStyle = rgbaOf(P.line2, 1); ctx.lineWidth = 0.9;
+    ctx.strokeRect(x0, y0, fw, fh);
+    const pw = fw * 0.42, ph = fh * 0.34;
+    ctx.fillStyle = rgbaOf(P.c2, 0.18);
+    ctx.fillRect(x0 + (fw - pw) / 2, y0 + (fh - ph) / 2, pw, ph);
+    ctx.strokeStyle = P.c2; ctx.lineWidth = 1.8;
+    ctx.strokeRect(x0 + (fw - pw) / 2, y0 + (fh - ph) / 2, pw, ph);
+    txt(ctx, '1 帧 × 16×16', x0 + fw + 14, y + h / 2 - 8, P.ink, '10px "Noto Sans SC",system-ui,sans-serif');
+    txt(ctx, '= 1 个 tubelet', x0 + fw + 14, y + h / 2 + 8, P.muted, '9px "Noto Sans SC",system-ui,sans-serif');
+  }
+  function drawVidTensor(ctx, x, y, w, h, P){
+    const groups = 8, n = 4, gap = 2, labelW = 66;
+    const cell = Math.max(2, Math.min(4, ((w - labelW - 16) / groups - gap) / n));
+    const x0 = x + 2, y0 = y + (h - n * cell) / 2;
+    for (let g = 0; g < groups; g++){
+      for (let r = 0; r < n; r++){
+        for (let c = 0; c < n; c++){
+          const v = 0.5 + 0.5 * Math.sin(g * 1.1 + r * 1.4 + c * 0.7);
+          const cc = NN.mix(P.surface2, P.c1, 0.12 + 0.88 * v);
+          ctx.fillStyle = 'rgb(' + cc[0] + ',' + cc[1] + ',' + cc[2] + ')';
+          ctx.fillRect(x0 + g * (n * cell + gap) + c * cell, y0 + r * cell, cell - 0.5, cell - 0.5);
+        }
+      }
+    }
+    const tx = x0 + groups * (n * cell + gap) + 8;
+    txt(ctx, '[1568, 768]', tx, y + h / 2 - 8, P.ink, '9.5px "JetBrains Mono",monospace');
+    txt(ctx, '8×196 token', tx, y + h / 2 + 8, P.muted, '8.5px "Noto Sans SC",system-ui,sans-serif');
+  }
+
+  const MODE = {
+    img: {
+      title: '图像 · 从像素到 196 个 token',
+      sum: 'd = 768',
+      stages: [['原始像素','224×224×3'],['切成 patch','14×14 = 196'],['patch 嵌入','196 × 768'],['token 张量','[196, 768]']],
+      fns: [drawImgRaw, drawImgPatch, drawImgEmbed, drawImgTensor]
+    },
+    txt: {
+      title: '文本 · 从字节到离散 token',
+      sum: 'd = 4096',
+      stages: [['原始文本','16 字 / 48 字节'],['字节级 BPE','9 个 token'],['查表嵌入','id → 4096 维'],['token 张量','[9, 4096]']],
+      fns: [drawTxtRaw, drawTxtTokens, drawTxtEmbed, drawTxtTensor]
+    },
+    aud: {
+      title: '音频 · 从波形到 mel 帧',
+      sum: '100 帧/秒',
+      stages: [['波形采样','9,600 个点'],['STFT / mel','80 × 60 帧'],['帧向量','60 × 80'],['token 张量','[60, 80]']],
+      fns: [drawAudioWave, drawAudioSpec, drawAudioFrames, drawAudioTokens]
+    },
+    vid: {
+      title: '视频 · 从帧序列到 tubelet',
+      sum: '30 fps',
+      stages: [['视频帧','30 帧 / 秒'],['抽帧','抽 8 帧'],['tubelet','1×16×16'],['token 张量','[1568, 768]']],
+      fns: [drawVidRaw, drawVidSample, drawVidTube, drawVidTensor]
+    }
+  };
+
+  function redraw(){
+    const fit = NN.fitCanvas(cv, 430);
+    const ctx = fit.ctx, w = fit.w, h = fit.h;
+    const P = pal();
+    ctx.clearRect(0, 0, w, h);
+    const M = MODE[mode];
+    txt(ctx, M.title, 14, 15, P.ink, '600 12.5px "Noto Sans SC", system-ui, sans-serif');
+    txt(ctx, M.sum, w - 14, 15, P.muted, '10px "JetBrains Mono", monospace', 'right');
+    const top = 34, rowH = 90, gap = 6, left = 14, visX = Math.min(112, Math.max(96, w * 0.28));
+    for (let s = 0; s < 4; s++){
+      const y = top + s * (rowH + gap);
+      ctx.fillStyle = rgbaOf(P.surface, 0.55);
+      rrect(ctx, 8, y, w - 16, rowH, 8); ctx.fill();
+      ctx.strokeStyle = rgbaOf(P.line, 0.9); ctx.lineWidth = 1; ctx.stroke();
+      ctx.beginPath(); ctx.arc(left + 9, y + 17, 8, 0, TAU);
+      ctx.fillStyle = rgbaOf(P.c1, 0.14); ctx.fill();
+      txt(ctx, String(s + 1), left + 9, y + 17, P.c1, '10px "JetBrains Mono", monospace', 'center');
+      txt(ctx, M.stages[s][0], left + 22, y + 16, P.ink, '10.5px "Noto Sans SC", system-ui, sans-serif');
+      txt(ctx, M.stages[s][1], left, y + 36, P.muted, '8.5px "JetBrains Mono", monospace');
+      M.fns[s](ctx, visX, y + 8, w - visX - 18, rowH - 16, P);
+      if (s < 3) arrow(ctx, left + 9, y + rowH + 1, left + 9, y + rowH + gap, P.line2, 1);
+    }
+  }
+
+  function synth(){
+    try{
+      const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+      if (!OAC) return;
+      const ac = new OAC(1, NS, SR);
+      const g = ac.createGain();
+      g.gain.setValueAtTime(0, 0);
+      g.gain.linearRampToValueAtTime(0.7, 0.02);
+      g.gain.setValueAtTime(0.7, DUR - 0.08);
+      g.gain.linearRampToValueAtTime(0, DUR);
+      g.connect(ac.destination);
+      const o1 = ac.createOscillator(), o2 = ac.createOscillator();
+      o1.type = 'sine'; o2.type = 'sine';
+      o1.frequency.setValueAtTime(440, 0);
+      o1.frequency.exponentialRampToValueAtTime(880, DUR);
+      o2.frequency.setValueAtTime(880, 0);
+      o2.frequency.exponentialRampToValueAtTime(1760, DUR);
+      const g1 = ac.createGain(), g2 = ac.createGain();
+      g1.gain.value = 0.7; g2.gain.value = 0.22;
+      o1.connect(g1); g1.connect(g); o2.connect(g2); g2.connect(g);
+      o1.start(0); o2.start(0); o1.stop(DUR); o2.stop(DUR);
+      ac.startRendering().then(function(buf){
+        const d = buf.getChannelData(0);
+        const a = new Float32Array(d.length);
+        for (let i = 0; i < d.length; i++) a[i] = d[i];
+        samples = a;
+        spec = computeSpec(samples);
+        if (mode === 'aud') redraw();
+      }).catch(function(){});
+    }catch(e){}
+  }
+
+  let playing = null;
+  play.addEventListener('click', function(){
+    if (!samples) return;
+    try{
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) { NN.toast('这个浏览器不支持音频播放'); return; }
+      playing = playing || new AC();
+      if (playing.state === 'suspended') playing.resume();
+      const b = playing.createBuffer(1, samples.length, SR);
+      const ch = b.getChannelData(0);
+      for (let i = 0; i < samples.length; i++) ch[i] = samples[i];
+      const src = playing.createBufferSource();
+      src.buffer = b; src.connect(playing.destination); src.start();
+    }catch(e){ NN.toast('这个浏览器不支持音频播放'); }
+  });
+
+  Array.prototype.forEach.call(seg.querySelectorAll('button'), function(btn){
+    btn.addEventListener('click', function(){
+      mode = btn.dataset.m;
+      Array.prototype.forEach.call(seg.querySelectorAll('button'), function(b){
+        b.setAttribute('aria-pressed', String(b === btn));
+      });
+      redraw();
+    });
+  });
+
+  onTheme(redraw);
+  window.addEventListener('resize', redraw);
+  redraw();
+  synth();
+});
+
+/* ================= 演示二:视频抽帧 ================= */
+defineDemo('d-12-frames', function(root){
+  if (deferDemo('d-12-frames', root)) return;
+  const cv = root.querySelector('#cv-12-frames');
+  const slider = root.querySelector('#s-12-fps');
+  const out = root.querySelector('#o-12-fps');
+  const hold = root.querySelector('#b-12-hold');
+  const SRC = 30;
+  let fps = 6, phase = 0, last = 0, playing = true, dims = null;
+
+  function ballAt(t){
+    const x = 0.5 + 0.40 * Math.sin(t * TAU);
+    const y = 0.55 + 0.26 * Math.sin(t * TAU * 2 + 0.6);
+    return [x, y];
+  }
+  function frame(ctx, x, y, s, t, P, accent){
+    ctx.fillStyle = rgbaOf(P.surface2, 1);
+    ctx.fillRect(x, y, s, s);
+    ctx.strokeStyle = accent ? P.c2 : rgbaOf(P.line2, 0.7);
+    ctx.lineWidth = accent ? 1.5 : 0.7;
+    ctx.strokeRect(x, y, s, s);
+    ctx.strokeStyle = rgbaOf(P.line2, 0.45);
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(x, y + s * 0.74);
+    ctx.lineTo(x + s, y + s * 0.74);
+    ctx.stroke();
+    const b = ballAt(t);
+    ctx.beginPath();
+    ctx.arc(x + b[0] * s, y + b[1] * s, Math.max(1.4, s * 0.10), 0, TAU);
+    ctx.fillStyle = accent ? P.c2 : P.c1;
+    ctx.fill();
+  }
+
+  function redraw(){
+    if (!dims) dims = NN.fitCanvas(cv, 390);
+    const ctx = dims.ctx, w = dims.w, h = dims.h;
+    const P = pal();
+    ctx.clearRect(0, 0, w, h);
+    const kept = fps;
+    const idx = [];
+    for (let k = 0; k < kept; k++) idx.push(Math.min(SRC - 1, Math.floor(k * SRC / kept)));
+    const set = {};
+    for (let i = 0; i < idx.length; i++) set[idx[i]] = true;
+
+    txt(ctx, '源视频:1 秒,30 fps', 14, 14, P.ink, '600 12px "Noto Sans SC", system-ui, sans-serif');
+    txt(ctx, '采样 ' + fps + ' fps → ' + kept + ' 帧', w - 14, 14, P.c2, '10px "JetBrains Mono", monospace', 'right');
+
+    const sx = 12, sw = w - 24, sy = 28, sh = 54;
+    const cw = (sw - 29 * 2) / 30;
+    for (let i = 0; i < SRC; i++){
+      const x = sx + i * (cw + 2);
+      const t = (i / SRC + phase) % 1;
+      ctx.fillStyle = rgbaOf(P.surface2, 1);
+      ctx.fillRect(x, sy, cw, sh);
+      ctx.strokeStyle = set[i] ? P.c2 : rgbaOf(P.line2, 0.55);
+      ctx.lineWidth = set[i] ? 1.6 : 0.6;
+      ctx.strokeRect(x, sy, cw, sh);
+      const b = ballAt(t);
+      ctx.beginPath();
+      ctx.arc(x + b[0] * cw, sy + b[1] * sh, 1.8, 0, TAU);
+      ctx.fillStyle = set[i] ? P.c2 : P.c1;
+      ctx.fill();
+    }
+    txt(ctx, '上排:每一格是一帧,橙色边框是被保留的帧', 12, sy + sh + 10, P.muted, '9px "Noto Sans SC", system-ui, sans-serif');
+
+    txt(ctx, '抽出的帧(按时间顺序堆叠)', 14, 116, P.ink2, '10px "Noto Sans SC", system-ui, sans-serif');
+    const gap = 5, ts = Math.min(36, (w - 24 - gap * 5) / 6);
+    const perRow = 6;
+    const gridW = perRow * ts + (perRow - 1) * gap;
+    const gx = (w - gridW) / 2, gy = 128;
+    for (let k = 0; k < kept; k++){
+      const r = Math.floor(k / perRow), c = k % perRow;
+      const t = (idx[k] / SRC + phase) % 1;
+      frame(ctx, gx + c * (ts + gap), gy + r * (ts + gap), ts, t, P, true);
+    }
+    const rows = Math.ceil(kept / perRow);
+    const bottom = gy + rows * (ts + gap) - gap;
+    const n = kept * 64 * 64 * 3;
+    txt(ctx, '张量 [' + kept + ', 64, 64, 3] = ' + n.toLocaleString('en-US') + ' 个数', 14, bottom + 18, P.ink, '10px "JetBrains Mono", monospace');
+    txt(ctx, '原始 30 帧 = 368,640 个数/秒;第一维:30 → ' + kept, 14, bottom + 34, P.muted, '9px "Noto Sans SC", system-ui, sans-serif');
+    if (kept === 1){
+      txt(ctx, '只剩 1 帧,时间信息几乎被压成 0', 14, bottom + 49, P.c2, '9px "Noto Sans SC", system-ui, sans-serif');
+    }
+  }
+
+  slider.addEventListener('input', function(){
+    fps = +slider.value;
+    out.textContent = fps + ' fps';
+    redraw();
+  });
+  hold.addEventListener('click', function(){
+    playing = !playing;
+    hold.textContent = playing ? '暂停' : '继续';
+  });
+  const ticker = NN.createTicker(root, function(t){
+    if (t - last < 33) return;
+    last = t;
+    if (playing) phase = (phase + 0.008) % 1;
+    redraw();
+  });
+  onTheme(redraw);
+  window.addEventListener('resize', function(){ dims = null; });
+  redraw();
+  ticker.start();
+});
+
+/* ================= 演示三:CLIP 对齐 ================= */
+defineDemo('d-12-clip', function(root){
+  if (deferDemo('d-12-clip', root)) return;
+  const cv = root.querySelector('#cv-12-clip');
+  const seg = root.querySelector('#seg-12-clip');
+  const IMGS = [
+    {name:'狗', vec:[0.90, 0.30], c:'--c1'},
+    {name:'猫', vec:[0.55, 0.83], c:'--c2'},
+    {name:'车', vec:[-0.42, 0.86], c:'--c3'},
+    {name:'糕', vec:[0.10, -0.92], c:'--c4'}
+  ];
+  const TEXTS = [
+    {cap:'一只狗在草地上奔跑', vec:[0.88, 0.35]},
+    {cap:'一只猫趴在窗台上', vec:[0.62, 0.76]},
+    {cap:'一辆红色汽车停在路边', vec:[-0.35, 0.88]},
+    {cap:'一块巧克力蛋糕', vec:[0.06, -0.90]}
+  ];
+  let q = 0;
+
+  function redraw(){
+    const fit = NN.fitCanvas(cv, 330);
+    const ctx = fit.ctx, w = fit.w, h = fit.h;
+    const P = pal();
+    ctx.clearRect(0, 0, w, h);
+    txt(ctx, 'CLIP 的嵌入空间(2 维投影)', 14, 14, P.ink, '600 12px "Noto Sans SC", system-ui, sans-serif');
+    txt(ctx, '■ 图像', 14, 32, P.muted, '9px "Noto Sans SC", system-ui, sans-serif');
+    ctx.fillStyle = P.c1; ctx.fillRect(52, 28, 7, 7);
+    txt(ctx, '● 文本', 68, 32, P.muted, '9px "Noto Sans SC", system-ui, sans-serif');
+    ctx.beginPath(); ctx.arc(100, 31, 3.5, 0, TAU);
+    ctx.strokeStyle = P.ink2; ctx.lineWidth = 1.2; ctx.stroke();
+
+    const px = 14, py = 44, pw = Math.max(130, w * 0.52), ph = h - py - 34;
+    const mx = function(v){ return px + (v[0] + 1) / 2 * pw; };
+    const my = function(v){ return py + ph - (v[1] + 1) / 2 * ph; };
+
+    ctx.strokeStyle = rgbaOf(P.line, 0.8); ctx.lineWidth = 0.8;
+    ctx.strokeRect(px, py, pw, ph);
+    ctx.strokeStyle = rgbaOf(P.line2, 0.45);
+    ctx.beginPath();
+    ctx.moveTo(px, my([0, 0])); ctx.lineTo(px + pw, my([0, 0]));
+    ctx.moveTo(mx([0, 0]), py); ctx.lineTo(mx([0, 0]), py + ph);
+    ctx.stroke();
+
+    const qv = TEXTS[q].vec;
+    for (let i = 0; i < IMGS.length; i++){
+      const im = IMGS[i], col = P[im.c.replace('--', '')];
+      const ix = mx(im.vec), iy = my(im.vec);
+      ctx.strokeStyle = rgbaOf(col, 0.55); ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.moveTo(mx(qv), my(qv)); ctx.lineTo(ix, iy); ctx.stroke();
+    }
+    for (let i = 0; i < IMGS.length; i++){
+      const im = IMGS[i], col = P[im.c.replace('--', '')];
+      const ix = mx(im.vec), iy = my(im.vec);
+      ctx.fillStyle = col;
+      ctx.fillRect(ix - 4.5, iy - 4.5, 9, 9);
+      txt(ctx, im.name + '图', ix, iy + 10, P.muted, '8px "Noto Sans SC", system-ui, sans-serif', 'center');
+    }
+    for (let i = 0; i < TEXTS.length; i++){
+      const tv = TEXTS[i].vec;
+      ctx.beginPath(); ctx.arc(mx(tv), my(tv), 3.2, 0, TAU);
+      if (i === q){
+        ctx.fillStyle = P.c2; ctx.fill();
+        ctx.beginPath(); ctx.arc(mx(tv), my(tv), 7.5, 0, TAU);
+        ctx.strokeStyle = P.c2; ctx.lineWidth = 2; ctx.stroke();
+        txt(ctx, '查询', mx(tv) + 10, my(tv) - 10, P.c2, '9px "Noto Sans SC", system-ui, sans-serif');
+      } else {
+        ctx.strokeStyle = rgbaOf(P.ink2, 0.65); ctx.lineWidth = 1.1; ctx.stroke();
+      }
+    }
+
+    const bx0 = px + pw + 16, bw = Math.max(70, w - bx0 - 14);
+    txt(ctx, '余弦相似度', bx0, 50, P.ink2, '9px "Noto Sans SC", system-ui, sans-serif');
+    const zero = bx0 + bw * 0.5;
+    ctx.strokeStyle = rgbaOf(P.line2, 0.8); ctx.lineWidth = 0.8;
+    ctx.beginPath(); ctx.moveTo(zero, 58); ctx.lineTo(zero, 58 + 4 * 56); ctx.stroke();
+    for (let i = 0; i < IMGS.length; i++){
+      const im = IMGS[i], col = P[im.c.replace('--', '')];
+      const sim = cosine(TEXTS[q].vec, im.vec);
+      const y = 64 + i * 56;
+      txt(ctx, im.name, bx0, y, P.ink, '10px "Noto Sans SC", system-ui, sans-serif');
+      txt(ctx, NN.fmt(sim, 2), bx0 + bw, y, sim > 0 ? P.ink2 : P.err, '10px "JetBrains Mono", monospace', 'right');
+      const len = Math.max(-1, Math.min(1, sim)) * bw * 0.46;
+      ctx.fillStyle = sim > 0 ? col : P.err;
+      if (len >= 0) ctx.fillRect(zero, y + 10, len, 7);
+      else ctx.fillRect(zero + len, y + 10, -len, 7);
+      ctx.strokeStyle = rgbaOf(P.line, 0.9); ctx.lineWidth = 0.6;
+      ctx.strokeRect(zero + Math.min(0, len), y + 10, Math.abs(len), 7);
+    }
+    txt(ctx, '取最大值对应的图', bx0, 58 + 4 * 56 + 6, P.muted, '8px "Noto Sans SC", system-ui, sans-serif');
+    txt(ctx, '真实 CLIP 是 512—1,024 维;二维投影只用于画图', 14, h - 12, P.muted, '9px "Noto Sans SC", system-ui, sans-serif');
+  }
+
+  Array.prototype.forEach.call(seg.querySelectorAll('button'), function(btn){
+    btn.addEventListener('click', function(){
+      q = +btn.dataset.t;
+      Array.prototype.forEach.call(seg.querySelectorAll('button'), function(b){
+        b.setAttribute('aria-pressed', String(b === btn));
+      });
+      redraw();
+    });
+  });
+  onTheme(redraw);
+  window.addEventListener('resize', redraw);
+  redraw();
+});
+})();
+</script>
