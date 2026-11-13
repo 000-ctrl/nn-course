@@ -32,5 +32,5 @@ ${end}
 </body>
 </html>`;
 
-writeFileSync(join(root, '神经网络讲义.html'), page, 'utf8');
-console.log(`built 神经网络讲义.html — ${parts.length} parts, ${(page.length / 1024).toFixed(1)} KB`);
+writeFileSync(join(root, 'index.html'), page, 'utf8');
+console.log(`built index.html — ${parts.length} parts, ${(page.length / 1024).toFixed(1)} KB`);

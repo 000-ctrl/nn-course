@@ -1,0 +1,20 @@
+# 依赖(本项目没有,但保留以防将来引入)
+node_modules/
+
+# check.mjs 的临时目录
+.check/
+
+# 截图与浏览器临时配置
+.shots/
+.shots*/
+*.png
+
+# 写作过程中可能残留的临时文件
+*.tmp.html
+parts/_*
+.tmp*
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
 const root = dirname(fileURLToPath(import.meta.url));
-const html = readFileSync(join(root, '神经网络讲义.html'), 'utf8');
+const html = readFileSync(join(root, 'index.html'), 'utf8');
 const scripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 
 const tmp = join(root, '.check');
